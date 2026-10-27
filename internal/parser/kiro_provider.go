@@ -147,12 +147,18 @@ func (p *kiroProvider) parseCurrentJSONL(
 	ctx context.Context, src kiroSource, machine string,
 	fingerprint SourceFingerprint,
 ) (ParseOutcome, error) {
-	sess, msgs, err := p.parseCurrentSessionContext(ctx, src.Path, src.SessionID, machine)
+	sess, transcript, err := p.parseCurrentSession(ctx, src.Path, src.SessionID, machine)
 	if err != nil {
 		return ParseOutcome{}, err
 	}
 	if sess == nil {
+		// A parent without messages emits no children either, so a partially
+		// written parent never reconciles its stored subagents away.
 		return ParseOutcome{ResultSetComplete: true, SkipReason: SkipNoSession}, nil
+	}
+	children, sourceErrs, err := parseCurrentSubExecutions(src.Root, sess, transcript.Spawns)
+	if err != nil {
+		return ParseOutcome{}, err
 	}
 	if fingerprint.Size > 0 {
 		sess.File.Size = fingerprint.Size
@@ -160,13 +166,22 @@ func (p *kiroProvider) parseCurrentJSONL(
 	if fingerprint.MTimeNS > 0 {
 		sess.File.Mtime = fingerprint.MTimeNS
 	}
-	if fingerprint.Hash != "" {
-		sess.File.Hash = fingerprint.Hash
-	}
-	return ParseOutcome{Results: []ParseResultOutcome{{
-		Result:      ParseResult{Session: *sess, Messages: msgs},
+	results := make([]ParseResultOutcome, 0, 1+len(children))
+	results = append(results, ParseResultOutcome{
+		Result:      ParseResult{Session: *sess, Messages: transcript.Messages},
 		DataVersion: DataVersionCurrent,
-	}}, ResultSetComplete: true}, nil
+	})
+	for _, child := range children {
+		results = append(results, ParseResultOutcome{Result: child, DataVersion: DataVersionCurrent})
+	}
+	// Every result shares the source fingerprint hash, as for other
+	// multi-file sources, so a change to any file refreshes the whole set.
+	if fingerprint.Hash != "" {
+		for i := range results {
+			results[i].Result.Session.File.Hash = fingerprint.Hash
+		}
+	}
+	return ParseOutcome{Results: results, SourceErrors: sourceErrs, ResultSetComplete: true}, nil
 }
 
 func (p *kiroProvider) parseSQLiteDB(
@@ -908,11 +923,21 @@ func (s kiroSourceSet) FindSource(
 			return SourceRef{}, false, err
 		}
 		for _, file := range currentFiles {
-			if _, id, ok := kiroCurrentPathUnderRoot(root, file.Path); ok &&
-				id == req.RawSessionID {
+			_, id, ok := kiroCurrentPathUnderRoot(root, file.Path)
+			if !ok {
+				continue
+			}
+			if id == req.RawSessionID {
 				if source, ok := s.sourceRef(root, file.Path, false); ok {
 					candidates = append(candidates, source)
 				}
+				continue
+			}
+			// A subagent session is parsed by the session that holds its
+			// sub-executions transcript.
+			if source, ok := s.sourceRef(root, file.Path, false); ok &&
+				sourceMatchesKiroSession(source, req.RawSessionID) {
+				candidates = append(candidates, source)
 			}
 		}
 		if path := s.legacySourceFile(root, req.RawSessionID); path != "" {
@@ -1014,6 +1039,7 @@ func (s kiroSourceSet) Fingerprint(
 		return fingerprint, nil
 	}
 	sidecar := ""
+	var subExecutions []string
 	switch src.Kind {
 	case kiroSourceCurrentJSONL:
 		if sidecar, ok := kiroCurrentSidecarPath(s.roots, src.Path); ok {
@@ -1022,6 +1048,20 @@ func (s kiroSourceSet) Fingerprint(
 				if sideInfo.ModTime().UnixNano() > fingerprint.MTimeNS {
 					fingerprint.MTimeNS = sideInfo.ModTime().UnixNano()
 				}
+			}
+		}
+		subExecutions, err = kiroSubExecutionFiles(src.Root, src.Path)
+		if err != nil {
+			return SourceFingerprint{}, err
+		}
+		for _, path := range subExecutions {
+			subInfo, statErr := os.Stat(path)
+			if statErr != nil {
+				return SourceFingerprint{}, fmt.Errorf("stat %s: %w", path, statErr)
+			}
+			fingerprint.Size += subInfo.Size()
+			if subInfo.ModTime().UnixNano() > fingerprint.MTimeNS {
+				fingerprint.MTimeNS = subInfo.ModTime().UnixNano()
 			}
 		}
 	case kiroSourceLegacyJSONL:
@@ -1051,6 +1091,9 @@ func (s kiroSourceSet) Fingerprint(
 			sidecar = candidate
 		}
 		hash, err = hashKiroJSONLSource(src.Path, sidecar)
+		if err == nil && len(subExecutions) > 0 {
+			hash, err = extendKiroHashWithSubExecutions(hash, subExecutions)
+		}
 	case kiroSourceLegacyJSONL:
 		hash, err = hashKiroJSONLSource(src.Path, sidecar)
 	default:
@@ -1081,6 +1124,22 @@ func hashKiroJSONLSource(transcript, sidecar string) (string, error) {
 	}
 	digest := sha256.Sum256([]byte("kiro-current\x00" + transcriptHash + "\x00" + sidecarHash))
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// extendKiroHashWithSubExecutions folds a session's subagent transcripts
+// into its source hash. Sessions without subagent transcripts keep the
+// plain transcript-and-sidecar hash, so archived sessions are not reparsed.
+func extendKiroHashWithSubExecutions(base string, paths []string) (string, error) {
+	h := sha256.New()
+	h.Write([]byte("kiro-current-sub-executions\x00" + base))
+	for _, path := range paths {
+		fileHash, err := hashJSONLSourceFile(path)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte("\x00" + filepath.Base(path) + "\x00" + fileHash))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (s kiroSourceSet) sourceFromRef(source SourceRef) (kiroSource, bool) {
@@ -1133,6 +1192,20 @@ func (s kiroSourceSet) sourceRef(
 		}
 		return s.newSourceRef(root, currentPath, "", sessionID, kiroSourceCurrentJSONL), true
 	}
+	if transcript, sessionID, ok := kiroSubExecutionPathUnderRoot(root, path); ok {
+		// A subagent transcript belongs to its session's messages.jsonl
+		// source, which parses the session and every subagent together.
+		for _, member := range []string{path, transcript} {
+			if _, err := os.Lstat(member); err == nil {
+				if !kiroRegularFileUnderRoot(root, member) {
+					return SourceRef{}, false
+				}
+			} else if !allowMissing || !kiroEventPathUnderRoot(root, member) {
+				return SourceRef{}, false
+			}
+		}
+		return s.newSourceRef(root, transcript, "", sessionID, kiroSourceCurrentJSONL), true
+	}
 	if kiroLegacyPathUnderRoot(root, path) && kiroRegularFileUnderRoot(root, path) {
 		return s.newSourceRef(root, path, "", "", kiroSourceLegacyJSONL), true
 	}
@@ -1170,6 +1243,16 @@ func (s kiroSourceSet) sourceRefForChangedPath(root, path string) (SourceRef, bo
 			return SourceRef{}, false
 		}
 		return s.newSourceRef(root, currentPath, "", sessionID, kiroSourceCurrentJSONL), true
+	}
+	if transcript, sessionID, ok := kiroSubExecutionPathUnderRoot(root, path); ok {
+		// A removed subagent transcript still refreshes its session.
+		if _, err := os.Lstat(path); err == nil && !kiroRegularFileUnderRoot(root, path) {
+			return SourceRef{}, false
+		}
+		if !kiroEventPathUnderRoot(root, path) || !kiroEventPathUnderRoot(root, transcript) {
+			return SourceRef{}, false
+		}
+		return s.newSourceRef(root, transcript, "", sessionID, kiroSourceCurrentJSONL), true
 	}
 	if legacyPath, ok := kiroLegacyMetaPathForEvent(root, path); ok {
 		if !kiroEventPathUnderRoot(root, legacyPath) {
@@ -1243,9 +1326,21 @@ func sourceMatchesKiroSession(source SourceRef, rawID string) bool {
 		return false
 	}
 	if src.SessionID != "" {
-		return src.SessionID == rawID
+		return src.SessionID == rawID || kiroCurrentSourceHasSubExecution(src, rawID)
 	}
 	return KiroSessionIDFromPath(src.Path) == rawID
+}
+
+// kiroCurrentSourceHasSubExecution reports whether a current-layout session
+// source parses the subagent transcript of rawID. Session directory names
+// are never subagent IDs, so they are not probed.
+func kiroCurrentSourceHasSubExecution(src kiroSource, rawID string) bool {
+	if src.Kind != kiroSourceCurrentJSONL || !IsValidSessionID(rawID) ||
+		isKiroCurrentSessionDir(rawID) {
+		return false
+	}
+	path := filepath.Join(filepath.Dir(src.Path), kiroSubExecutionsDirName, rawID+".jsonl")
+	return kiroRegularFileUnderRoot(src.Root, path)
 }
 
 func (s kiroSourceSet) bestSource(sources []SourceRef) (SourceRef, bool) {
@@ -1560,6 +1655,26 @@ func kiroCurrentPathUnderRoot(root, path string) (string, string, bool) {
 		return "", "", false
 	}
 	return filepath.Clean(path), session, true
+}
+
+// kiroSubExecutionPathUnderRoot maps a subagent transcript at
+// [<workspace>/]sess_<id>/sub-executions/<subSessionId>.jsonl to its
+// session's messages.jsonl and session directory name.
+func kiroSubExecutionPathUnderRoot(root, path string) (string, string, bool) {
+	rel, ok := relUnder(filepath.Clean(root), filepath.Clean(path))
+	if !ok {
+		return "", "", false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if (len(parts) != 3 && len(parts) != 4) || parts[len(parts)-2] != kiroSubExecutionsDirName {
+		return "", "", false
+	}
+	subID, isJSONL := strings.CutSuffix(parts[len(parts)-1], ".jsonl")
+	if !isJSONL || !IsValidSessionID(subID) {
+		return "", "", false
+	}
+	sessionDir := filepath.Dir(filepath.Dir(filepath.Clean(path)))
+	return kiroCurrentPathUnderRoot(root, filepath.Join(sessionDir, "messages.jsonl"))
 }
 
 func kiroCurrentPathForEvent(root, path string) (string, string, bool) {
