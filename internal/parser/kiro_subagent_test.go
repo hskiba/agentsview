@@ -110,6 +110,8 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 			kiroTestChildA, "coder", "do the subtask"),
 		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:01Z",
 			"../escape", "coder", "ignored spawn"),
+		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:01Z",
+			kiroTestSessionShapedID, "coder", "ignored spawn"),
 		testjsonl.KiroSubAgentCompleteJSON(kiroTestCompleteRecordID, "2026-06-01T10:00:09Z",
 			kiroTestChildA, map[string]any{"status": "success", "response": "subtask done"}),
 		testjsonl.KiroAssistantJSON("2026-06-01T10:00:10Z", "parent reply"),
@@ -143,7 +145,7 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 
 	parentCalls := kiroTestToolCalls(parent)
 	assert.Equal(t, []string{kiroTestChildA}, slices.Sorted(maps.Keys(parentCalls)),
-		"the spawn of ../escape is not a valid subagent ID")
+		"spawns of ../escape and %s are not valid subagent IDs", kiroTestSessionShapedID)
 	require.Contains(t, parentCalls, kiroTestChildA, "the parent should record the spawn of %s", kiroTestChildA)
 	spawn := parentCalls[kiroTestChildA]
 	assert.Equal(t, "invoke_subagent", spawn.ToolName)
@@ -317,6 +319,11 @@ func TestKiroProviderSubagentResultFallsBackToErrorMessage(t *testing.T) {
 			subID:  "../escape",
 			fields: map[string]any{"response": "ok"},
 		},
+		{
+			name:   "session-shaped subagent ID records no result",
+			subID:  kiroTestSessionShapedID,
+			fields: map[string]any{"response": "ok"},
+		},
 	}
 	lines := []string{testjsonl.KiroUserJSON("2026-06-01T10:00:00Z", "parent prompt")}
 	for _, tt := range tests {
@@ -429,7 +436,8 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 	nested := filepath.Join(sessDir, "sub-executions", "nested", nestedID+".jsonl")
 	badID := filepath.Join(sessDir, "sub-executions", "bad.id.jsonl")
 	jsonExt := filepath.Join(sessDir, "sub-executions", jsonExtID+".json")
-	for _, path := range []string{history, snapshot, noSessionDir, nested, badID, jsonExt} {
+	sessionShaped := kiroTestSubExecutionPath(transcript, rootSessionRawID)
+	for _, path := range []string{history, snapshot, noSessionDir, nested, badID, jsonExt, sessionShaped} {
 		writeSourceFile(t, path, testjsonl.JoinJSONL(childLine))
 	}
 	outside := filepath.Join(t.TempDir(), symlinkID+".jsonl")
@@ -490,6 +498,7 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 		{name: "nested directory", path: nested, event: "write"},
 		{name: "invalid ID", path: badID, event: "write"},
 		{name: "json extension", path: jsonExt, event: "write"},
+		{name: "session-shaped ID", path: sessionShaped, event: "write"},
 		{name: "symlink escaping the root", path: symlink, event: "write", symlink: true},
 	}
 	for _, tt := range tests {

@@ -3498,10 +3498,13 @@ schemas keep their existing ordering behavior.
 
     A current-layout session source parses its `messages.jsonl` together with
     its sub-executions files; only regular `<id>.jsonl` files directly inside
-    `sub-executions` count. Each spawn becomes an `invoke_subagent` Task tool
-    call and result, and each subagent becomes session `kiro:<subSessionId>`,
-    linked to the transcript whose `sub_agent_start` names it (the top session
-    when none does) and inheriting its project and working directory. Because
+    `sub-executions` count. A `subSessionId` shaped like a session directory
+    (`sess_<id>`) is ignored in spawn records and file names, because
+    `kiro:sess_<id>` would collide with that session. Each spawn becomes an
+    `invoke_subagent` Task tool call and result, and each subagent becomes
+    session `kiro:<subSessionId>`, linked to the transcript whose
+    `sub_agent_start` names it (the top session when none does) and inheriting
+    its project and working directory. Because
     kiro-cli writes a subagent's prompt only into the spawning transcript, a
     subagent transcript with no user turn of its own starts with that prompt as
     a user turn, timestamped from `sub_agent_start` and stored with

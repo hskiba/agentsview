@@ -311,6 +311,14 @@ type kiroSubagentSpawn struct {
 	Timestamp    time.Time
 }
 
+// isKiroSubagentID reports whether id can name a subagent session. A
+// subagent is stored as kiro:<id> beside top-level sessions, so an ID shaped
+// like a session directory (sess_<id>) is rejected: it would collide with
+// that session.
+func isKiroSubagentID(id string) bool {
+	return IsValidSessionID(id) && !isKiroCurrentSessionDir(id)
+}
+
 // kiroSubagentInput is the Task tool input recorded for a subagent spawn,
 // using the field names the session viewer reads for Task calls.
 type kiroSubagentInput struct {
@@ -428,7 +436,7 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, error) {
 			// session ID is the only reliable key pairing start, complete,
 			// and the subagent's own transcript.
 			subID := payload.Get("subSessionId").Str
-			if !IsValidSessionID(subID) {
+			if !isKiroSubagentID(subID) {
 				continue
 			}
 			spawn := kiroSubagentSpawn{SubSessionID: subID, Name: payload.Get("subAgentName").Str, Prompt: payload.Get("prompt").Str, Timestamp: timestamp}
@@ -444,7 +452,7 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, error) {
 			ordinal++
 		case "sub_agent_complete":
 			subID := payload.Get("subSessionId").Str
-			if !IsValidSessionID(subID) {
+			if !isKiroSubagentID(subID) {
 				continue
 			}
 			// A failed spawn reports an errorMessage and may leave response
@@ -533,8 +541,8 @@ const kiroSubExecutionsDirName = "sub-executions"
 // kiroSubExecutionFiles lists the subagent transcripts admitted for a
 // session transcript: regular <subSessionId>.jsonl files directly inside the
 // session's sub-executions directory that resolve inside root, sorted by
-// name. Subdirectories, other extensions, invalid IDs, and symlinks that
-// escape root are ignored.
+// name. Subdirectories, other extensions, invalid or session-shaped IDs, and
+// symlinks that escape root are ignored.
 func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 	dir := filepath.Join(filepath.Dir(transcript), kiroSubExecutionsDirName)
 	info, err := os.Stat(dir)
@@ -557,7 +565,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 	var files []string
 	for _, entry := range entries {
 		subID, ok := strings.CutSuffix(entry.Name(), ".jsonl")
-		if !ok || !IsValidSessionID(subID) || entry.IsDir() {
+		if !ok || !isKiroSubagentID(subID) || entry.IsDir() {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())

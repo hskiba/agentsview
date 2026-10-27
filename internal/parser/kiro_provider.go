@@ -927,7 +927,7 @@ func (s kiroSourceSet) FindSource(
 		if err != nil {
 			return SourceRef{}, false, err
 		}
-		probeSubagent := IsValidSessionID(req.RawSessionID) && !isKiroCurrentSessionDir(req.RawSessionID)
+		probeSubagent := isKiroSubagentID(req.RawSessionID)
 		for _, file := range currentFiles {
 			_, id, ok := kiroCurrentPathUnderRoot(root, file.Path)
 			if !ok {
@@ -1349,8 +1349,7 @@ func sourceMatchesKiroSession(source SourceRef, rawID string) bool {
 // source parses the subagent transcript of rawID. Session directory names
 // are never subagent IDs, so they are not probed.
 func kiroCurrentSourceHasSubExecution(src kiroSource, rawID string) bool {
-	if src.Kind != kiroSourceCurrentJSONL || !IsValidSessionID(rawID) ||
-		isKiroCurrentSessionDir(rawID) {
+	if src.Kind != kiroSourceCurrentJSONL || !isKiroSubagentID(rawID) {
 		return false
 	}
 	path := filepath.Join(filepath.Dir(src.Path), kiroSubExecutionsDirName, rawID+".jsonl")
@@ -1673,7 +1672,8 @@ func kiroCurrentPathUnderRoot(root, path string) (string, string, bool) {
 
 // kiroSubExecutionPathUnderRoot maps a subagent transcript at
 // [<workspace>/]sess_<id>/sub-executions/<subSessionId>.jsonl to its
-// session's messages.jsonl and session directory name.
+// session's messages.jsonl and session directory name. A session-shaped
+// subSessionId is not a subagent transcript.
 func kiroSubExecutionPathUnderRoot(root, path string) (string, string, bool) {
 	rel, ok := relUnder(filepath.Clean(root), filepath.Clean(path))
 	if !ok {
@@ -1684,7 +1684,7 @@ func kiroSubExecutionPathUnderRoot(root, path string) (string, string, bool) {
 		return "", "", false
 	}
 	subID, isJSONL := strings.CutSuffix(parts[len(parts)-1], ".jsonl")
-	if !isJSONL || !IsValidSessionID(subID) {
+	if !isJSONL || !isKiroSubagentID(subID) {
 		return "", "", false
 	}
 	sessionDir := filepath.Dir(filepath.Dir(filepath.Clean(path)))
