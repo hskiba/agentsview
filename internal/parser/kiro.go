@@ -1,11 +1,14 @@
 package parser
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -536,7 +539,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 	dir := filepath.Join(filepath.Dir(transcript), kiroSubExecutionsDirName)
 	info, err := os.Stat(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("stat Kiro sub-executions %s: %w", dir, err)
@@ -546,7 +549,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read Kiro sub-executions %s: %w", dir, err)
@@ -566,7 +569,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 			files = append(files, path)
 		}
 	}
-	sort.Strings(files)
+	slices.Sort(files)
 	return files, nil
 }
 
@@ -625,10 +628,8 @@ func parseCurrentSubExecutions(
 		if known && origin.parentID != "kiro:"+child.subID {
 			parentID = origin.parentID
 		}
-		firstMessage := child.transcript.FirstMessage
-		if firstMessage == "" && origin.spawn.Prompt != "" {
-			firstMessage = truncate(strings.ReplaceAll(strings.TrimSpace(origin.spawn.Prompt), "\n", " "), 300)
-		}
+		firstMessage := cmp.Or(child.transcript.FirstMessage,
+			truncate(strings.ReplaceAll(strings.TrimSpace(origin.spawn.Prompt), "\n", " "), 300))
 		startedAt, endedAt := child.transcript.bounds()
 		results = append(results, ParseResult{
 			Session: ParsedSession{

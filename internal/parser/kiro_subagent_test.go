@@ -1,8 +1,10 @@
 package parser
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -175,7 +177,7 @@ func TestKiroProviderIgnoresSubExecutionLookalikes(t *testing.T) {
 	byID := parseKiroTestSessions(t, root)
 	assert.ElementsMatch(t,
 		[]string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA},
-		mapKeys(byID))
+		slices.Collect(maps.Keys(byID)))
 }
 
 func TestKiroProviderIgnoresSubExecutionSymlinkEscape(t *testing.T) {
@@ -192,7 +194,7 @@ func TestKiroProviderIgnoresSubExecutionSymlinkEscape(t *testing.T) {
 	}
 
 	byID := parseKiroTestSessions(t, root)
-	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID}, mapKeys(byID))
+	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID}, slices.Collect(maps.Keys(byID)))
 }
 
 func TestKiroProviderFingerprintCoversSubExecutions(t *testing.T) {
@@ -269,12 +271,4 @@ func TestKiroProviderFindSourceResolvesSubagentToItsSession(t *testing.T) {
 			}
 		})
 	}
-}
-
-func mapKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	return keys
 }

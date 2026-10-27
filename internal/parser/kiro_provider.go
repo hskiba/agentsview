@@ -1068,7 +1068,7 @@ func (s kiroSourceSet) Fingerprint(
 		for _, path := range admitted {
 			subInfo, statErr := os.Stat(path)
 			if statErr != nil {
-				if os.IsNotExist(statErr) {
+				if errors.Is(statErr, os.ErrNotExist) {
 					// Removed since the directory was listed.
 					continue
 				}
@@ -1076,9 +1076,7 @@ func (s kiroSourceSet) Fingerprint(
 			}
 			subExecutions = append(subExecutions, path)
 			fingerprint.Size += subInfo.Size()
-			if subInfo.ModTime().UnixNano() > fingerprint.MTimeNS {
-				fingerprint.MTimeNS = subInfo.ModTime().UnixNano()
-			}
+			fingerprint.MTimeNS = max(fingerprint.MTimeNS, subInfo.ModTime().UnixNano())
 		}
 	case kiroSourceLegacyJSONL:
 		candidate, found, sidecarErr := kiroLegacySidecarPath(s.roots, src.Path)
