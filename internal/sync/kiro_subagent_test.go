@@ -475,6 +475,39 @@ func TestKiroUnreadableSubagentLeavesSessionAndSiblingsSyncing(t *testing.T) {
 	}
 }
 
+// A delegation's completion status reaches tool health: a failed spawn counts
+// as a tool failure of the spawning session and a successful one does not.
+func TestKiroSubagentDelegationStatusFeedsToolHealth(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+	sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
+	spawnKiroLaterSubagent(t, sessDir)
+	appendKiroLine(t, filepath.Join(sessDir, "messages.jsonl"),
+		testjsonl.KiroSubAgentCompleteJSON("invoke_subagent_toolu_test02-sub-agent-complete", "2026-06-01T10:01:30Z",
+			kiroSubagentLaterRawID, map[string]any{"status": "error", "errorMessage": "reviewer failed"}))
+	stats := env.engine.SyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted)
+	require.Zero(t, stats.Failed)
+
+	messages, err := env.db.GetAllMessages(t.Context(), kiroSubagentParentID)
+	require.NoError(t, err)
+	statuses := map[string]string{}
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			for _, event := range call.ResultEvents {
+				statuses[call.ToolUseID] = event.Status
+			}
+		}
+	}
+	assert.Equal(t, map[string]string{
+		kiroSubagentChildRawID: "completed",
+		kiroSubagentLaterRawID: "errored",
+	}, statuses, "each delegation result records its completion status")
+	parent, err := env.db.GetSessionFull(t.Context(), kiroSubagentParentID)
+	require.NoError(t, err)
+	require.NotNil(t, parent)
+	assert.Equal(t, 1, parent.ToolFailureSignalCount, "only the failed delegation is a tool failure")
+}
+
 // Only a session transcript's rows are completed together. A Kiro SQLite
 // store holds independent sessions, so a failed write leaves the others
 // current.

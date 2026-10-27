@@ -463,7 +463,14 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, error) {
 					raw = errRaw
 				}
 			}
-			messages = append(messages, ParsedMessage{Ordinal: ordinal, Role: RoleUser, Timestamp: timestamp, ToolResults: []ParsedToolResult{{ToolUseID: subID, ContentRaw: raw, ContentLength: len(raw)}}})
+			status := ""
+			switch payload.Get("status").Str {
+			case "success":
+				status = "completed"
+			case "error":
+				status = "errored"
+			}
+			messages = append(messages, ParsedMessage{Ordinal: ordinal, Role: RoleUser, Timestamp: timestamp, ToolResults: []ParsedToolResult{{ToolUseID: subID, Source: "tool_result", Status: status, ContentRaw: raw, ContentLength: len(raw)}}})
 			accepted = true
 			ordinal++
 		}

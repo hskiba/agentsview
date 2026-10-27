@@ -3470,8 +3470,11 @@ schemas keep their existing ordering behavior.
     record `id` values can repeat, so `subSessionId` is the pairing key. This
     layout was observed in local kiro-cli 2.34.1 output on 2026-10-27: every
     `sub_agent_start` had a matching sub-executions file, `response` was
-    always a string, and failed spawns could also set `errorMessage`. There is
-    no producer schema.
+    always a string, and failed spawns could also set `errorMessage`.
+    Rechecked against local kiro-cli 2.34.2 output the same day: every
+    `sub_agent_complete` `status` was `success` or `error`, and every ordinary
+    `tool_result` record carried a `success` boolean or null. There is no
+    producer schema.
 
 - **Evidence:** `documentation`.
 
@@ -3518,17 +3521,19 @@ schemas keep their existing ordering behavior.
     `sub-executions` count. A `subSessionId` shaped like a session directory
     (`sess_<id>`) is ignored in spawn records and file names, because
     `kiro:sess_<id>` would collide with that session. Each spawn becomes an
-    `invoke_subagent` Task tool call and result, and each subagent becomes
-    session `kiro:<subSessionId>`, linked to the transcript whose
-    `sub_agent_start` names it (the top session when none does), named by its
-    `subAgentName`, and inheriting its project and working directory. The
-    prompt stays on the spawning transcript's Task call; the subagent's own
-    transcript holds only what kiro-cli wrote there. The session source owns
-    those child rows, so a removed subagent transcript
-    marks its session source-missing. Sessions without sub-executions files
-    keep their previous fingerprint, and because every observed spawn record
-    has a sub-executions file, sessions with spawns change fingerprint and are
-    reparsed without a data-version bump. Limits: a session whose SQLite
+    `invoke_subagent` Task tool call and result; the result records `success`
+    as `completed` and `error` as `errored`, so a failed delegation counts in
+    tool health. Ordinary `tool_result` records' `success` is not read. Each
+    subagent becomes session `kiro:<subSessionId>`, linked to the transcript
+    whose `sub_agent_start` names it (the top session when none does), named
+    by its `subAgentName`, and inheriting its project and working directory.
+    The prompt stays on the spawning transcript's Task call; the subagent's
+    own transcript holds only what kiro-cli wrote there. The session source
+    owns those child rows, so a removed subagent transcript marks its session
+    source-missing. Sessions without sub-executions files keep their previous
+    fingerprint, and because every observed spawn record has a sub-executions
+    file, sessions with spawns change fingerprint and are reparsed without a
+    data-version bump. Limits: a session whose SQLite
     duplicate outranks its current JSONL source emits no subagents; a
     `subSessionId` copied into two sessions is stored once, linked to
     whichever spawning session synced last; and while a nested subagent's
