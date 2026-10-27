@@ -538,6 +538,7 @@ func (p *kiroProvider) parseCurrentSession(
 // including subagents spawned by other subagents.
 const kiroSubExecutionsDirName = "sub-executions"
 
+// kiroSubExecution is a listed subagent transcript and its probe error.
 type kiroSubExecution struct {
 	path string
 	err  error
@@ -586,12 +587,16 @@ func kiroSubExecutionFiles(root, transcript string) ([]kiroSubExecution, error) 
 	return files, nil
 }
 
+var errKiroSpawnRecordUnreadable = errors.New("spawn record unknown while a subagent transcript cannot be read")
+
 // parseKiroSubExecutions parses the subagent transcripts of a session as
 // child sessions. Each child links to the transcript whose sub_agent_start
 // names it, which is a sibling subagent for nested spawns, and inherits the
-// parent session's project, working directory, and machine. A child file
-// that cannot be read becomes a retryable per-session error. Cancelling ctx
-// stops the parse between subagent files.
+// parent session's project, working directory, and machine. When a child
+// file cannot be read, it and every child no readable transcript spawns
+// become retryable per-session errors, so none is written without its spawn
+// prompt and parent link. Cancelling ctx stops the parse between subagent
+// files.
 func parseKiroSubExecutions(
 	ctx context.Context, root string, parent *ParsedSession, parentSpawns []kiroSubagentSpawn,
 ) ([]ParseResult, []SourceError, error) {
@@ -648,9 +653,17 @@ func parseKiroSubExecutions(
 		recordFirstSpawner(id, transcript.Spawns)
 		parsed = append(parsed, childTranscript{path: path, subID: subID, id: id, transcript: transcript})
 	}
+	readFailed := len(sourceErrs) > 0
 	results := make([]ParseResult, 0, len(parsed))
 	for _, child := range parsed {
 		origin, known := origins[child.subID]
+		if !known && readFailed {
+			sourceErrs = append(sourceErrs, SourceError{
+				SourceKey: VirtualSourcePath(parent.File.Path, child.subID), DisplayPath: child.path,
+				SessionID: child.id, Err: errKiroSpawnRecordUnreadable, Retryable: true,
+			})
+			continue
+		}
 		parentID := parent.ID
 		if known && origin.parentID != child.id {
 			parentID = origin.parentID

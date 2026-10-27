@@ -674,15 +674,24 @@ func TestKiroProviderSubExecutionWorkStopsWhenCancelled(t *testing.T) {
 	})
 }
 
-// A subagent transcript that cannot be read fails only that subagent. Its
-// error is keyed under the session transcript, the source being parsed,
-// because the engine discards a whole outcome whose diagnostic names another
-// source.
+// A subagent transcript that cannot be read fails only that subagent and the
+// subagents no readable transcript spawns. Each error is keyed under the
+// session transcript, the source being parsed, because the engine discards a
+// whole outcome whose diagnostic names another source.
 func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
 	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
-	writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child A working"))
-	unreadable := writeKiroTestSubExecution(t, transcript, kiroTestChildB, testjsonl.KiroAssistantJSON("", "child B working"))
+	transcript := writeKiroTestSession(t, root,
+		testjsonl.KiroUserJSON("", "parent prompt"),
+		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildA, "coder", "task A"),
+		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildB, "coder", "task B"))
+	writeKiroTestSubExecution(t, transcript, kiroTestChildA,
+		testjsonl.KiroAssistantJSON("", "child A working"),
+		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildD, "coder", "readable nested task"))
+	unreadable := writeKiroTestSubExecution(t, transcript, kiroTestChildB,
+		testjsonl.KiroAssistantJSON("", "child B working"),
+		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildC, "coder", "nested task"))
+	nested := writeKiroTestSubExecution(t, transcript, kiroTestChildC, testjsonl.KiroAssistantJSON("", "child C working"))
+	writeKiroTestSubExecution(t, transcript, kiroTestChildD, testjsonl.KiroAssistantJSON("", "child D working"))
 	require.NoError(t, os.Chmod(unreadable, 0))
 	t.Cleanup(func() { assert.NoError(t, os.Chmod(unreadable, 0o644)) })
 	if _, err := os.ReadFile(unreadable); err == nil {
@@ -702,15 +711,23 @@ func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
 	for _, result := range outcome.Results {
 		ids = append(ids, result.Result.Session.ID)
 	}
-	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA}, ids,
-		"the session and its readable subagent still parse")
-	require.Len(t, outcome.SourceErrors, 1)
-	got := outcome.SourceErrors[0]
-	assert.Equal(t, transcript+"#"+kiroTestChildB, got.SourceKey)
-	assert.Equal(t, unreadable, got.DisplayPath)
-	assert.Equal(t, "kiro:"+kiroTestChildB, got.SessionID)
-	assert.True(t, got.Retryable, "a read failure is retried on the next sync")
-	assert.ErrorIs(t, got.Err, os.ErrPermission)
+	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA, "kiro:" + kiroTestChildD}, ids,
+		"the session and every subagent with a readable spawn record still parse")
+	require.Len(t, outcome.SourceErrors, 2)
+	for i, want := range []struct {
+		subID, path string
+		err         error
+	}{
+		{subID: kiroTestChildB, path: unreadable, err: os.ErrPermission},
+		{subID: kiroTestChildC, path: nested, err: errKiroSpawnRecordUnreadable},
+	} {
+		got := outcome.SourceErrors[i]
+		assert.Equal(t, transcript+"#"+want.subID, got.SourceKey)
+		assert.Equal(t, want.path, got.DisplayPath)
+		assert.Equal(t, "kiro:"+want.subID, got.SessionID)
+		assert.True(t, got.Retryable, "subagent %s is retried on the next sync", want.subID)
+		assert.ErrorIs(t, got.Err, want.err)
+	}
 }
 
 // Memory admission charges a parse for every file it reads. Only sizes

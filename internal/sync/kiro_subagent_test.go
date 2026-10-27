@@ -347,6 +347,7 @@ func TestKiroSubagentWriteFailureRetriesWholeSession(t *testing.T) {
 	}
 }
 
+// kiroSessionText joins the content of a session's stored messages.
 func kiroSessionText(t *testing.T, database *db.DB, sessionID string) string {
 	t.Helper()
 	messages, err := database.GetAllMessages(t.Context(), sessionID)
@@ -370,8 +371,8 @@ func TestKiroUnreadableSubagentLeavesSessionAndSiblingsSyncing(t *testing.T) {
 			breakChild: func(t *testing.T, path string) func() {
 				t.Helper()
 				require.NoError(t, os.Chmod(path, 0))
+				t.Cleanup(func() { assert.NoError(t, os.Chmod(path, 0o644)) })
 				if _, err := os.ReadFile(path); err == nil {
-					require.NoError(t, os.Chmod(path, 0o644))
 					t.Skip("file permissions do not block reads for this user")
 				}
 				return func() { require.NoError(t, os.Chmod(path, 0o644)) }
@@ -472,6 +473,33 @@ func TestKiroUnreadableSubagentLeavesSessionAndSiblingsSyncing(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A subagent spawned by an unreadable subagent has no readable spawn record,
+// so its archived prompt must survive until the spawner can be read again.
+func TestKiroNestedSubagentKeepsSpawnWhileSpawnerUnreadable(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+	sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
+	spawner := filepath.Join(sessDir, "sub-executions", kiroSubagentChildRawID+".jsonl")
+	appendKiroLine(t, spawner, testjsonl.KiroSubAgentStartJSON("invoke_subagent_toolu_test03-sub-agent-start",
+		"2026-06-01T10:00:05Z", kiroSubagentLaterRawID, "nested", "NESTED_PROMPT"))
+	nested := filepath.Join(sessDir, "sub-executions", kiroSubagentLaterRawID+".jsonl")
+	writeKiroLines(t, nested, testjsonl.KiroAssistantJSON("2026-06-01T10:00:06Z", "nested working"))
+	stats := env.engine.SyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted)
+	require.Zero(t, stats.Failed)
+
+	require.NoError(t, os.Chmod(spawner, 0))
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(spawner, 0o644)) })
+	if _, err := os.ReadFile(spawner); err == nil {
+		t.Skip("file permissions do not block reads for this user")
+	}
+	appendKiroLine(t, nested, testjsonl.KiroAssistantJSON("2026-06-01T10:00:07Z", "nested update"))
+	stats = env.engine.SyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted)
+
+	assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentLaterID), "NESTED_PROMPT",
+		"the nested subagent keeps the prompt its spawner delivered")
 }
 
 // Only a session transcript's rows are completed together. A Kiro SQLite

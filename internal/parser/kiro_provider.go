@@ -1306,10 +1306,6 @@ func KiroSessionSourceMtime(roots []string, path string) (int64, bool, error) {
 		}
 		for _, sub := range subExecutions {
 			name := kiroSubExecutionsDirName + "/" + filepath.Base(sub.path)
-			if sub.err != nil {
-				_, _ = fmt.Fprintf(h, "%s\x00error\x00", name)
-				continue
-			}
 			subInfo, err := os.Stat(sub.path)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
