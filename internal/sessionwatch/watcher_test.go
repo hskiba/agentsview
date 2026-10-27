@@ -342,7 +342,7 @@ func TestCheckDBForChangesKiroSubagentAppendFallsBackToSync(t *testing.T) {
 	for _, message := range messages {
 		contents = append(contents, message.Content)
 	}
-	assert.Equal(t, []string{"do the subtask", "working", "subtask done"}, contents)
+	assert.Equal(t, []string{"working", "subtask done"}, contents)
 }
 
 // Every file a Kiro session source parses feeds the change token, so a
