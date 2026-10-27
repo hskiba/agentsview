@@ -167,11 +167,11 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 	}{
 		{
 			name: "spawned by the session", subID: kiroTestChildA, parentID: parentID,
-			sessionName: "coder", firstMessage: "do the subtask",
+			sessionName: "coder", firstMessage: "",
 		},
 		{
 			name: "spawned by a sibling subagent", subID: kiroTestChildB, parentID: "kiro:" + kiroTestChildA,
-			sessionName: "reviewer", firstMessage: "review the change",
+			sessionName: "reviewer", firstMessage: "",
 		},
 		{
 			name: "never spawned", subID: kiroTestChildC, parentID: parentID,
@@ -200,89 +200,6 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 	assert.Equal(t, map[string]string{kiroTestChildB: `"reviewer failed"`},
 		kiroTestToolResults(byID["kiro:"+kiroTestChildA]),
 		"a failed spawn reports its error message as the result")
-}
-
-// kiro-cli writes a subagent's prompt only into the spawning transcript, so
-// the subagent's own transcript would otherwise start mid-task.
-func TestKiroProviderStartsSubagentTranscriptWithItsPrompt(t *testing.T) {
-	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root,
-		testjsonl.KiroUserJSON("2026-06-01T10:00:00Z", "parent prompt"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:01Z",
-			kiroTestChildA, "coder", "do the subtask"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:01Z",
-			kiroTestChildB, "reviewer", "review the change"),
-	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildA,
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:02Z", "child A working"),
-	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildB,
-		testjsonl.KiroUserJSON("2026-06-01T10:00:03Z", "review the change"),
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:04Z", "child B working"),
-	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildC,
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:05Z", "orphan working"),
-	)
-
-	byID := parseKiroTestSessions(t, root)
-	type turn struct{ Role, Content string }
-	tests := []struct {
-		name      string
-		subID     string
-		turns     []turn
-		userCount int
-		startedAt string
-		endedAt   string
-	}{
-		{
-			name:  "prompt copied from the spawn",
-			subID: kiroTestChildA,
-			turns: []turn{
-				{Role: "user", Content: "do the subtask"},
-				{Role: "assistant", Content: "child A working"},
-			},
-			userCount: 1,
-			startedAt: "2026-06-01T10:00:01Z",
-			endedAt:   "2026-06-01T10:00:02Z",
-		},
-		{
-			name:  "recorded prompt kept as written",
-			subID: kiroTestChildB,
-			turns: []turn{
-				{Role: "user", Content: "review the change"},
-				{Role: "assistant", Content: "child B working"},
-			},
-			userCount: 1,
-			startedAt: "2026-06-01T10:00:03Z",
-			endedAt:   "2026-06-01T10:00:04Z",
-		},
-		{
-			name:      "never spawned so no prompt to copy",
-			subID:     kiroTestChildC,
-			turns:     []turn{{Role: "assistant", Content: "orphan working"}},
-			userCount: 0,
-			startedAt: "2026-06-01T10:00:05Z",
-			endedAt:   "2026-06-01T10:00:05Z",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Contains(t, byID, "kiro:"+tt.subID, "subagent transcript %s should be emitted", tt.subID)
-			child := byID["kiro:"+tt.subID]
-			var turns []turn
-			for i, msg := range child.Messages {
-				assert.Equal(t, i, msg.Ordinal, "ordinals of %s stay contiguous", tt.subID)
-				turns = append(turns, turn{Role: string(msg.Role), Content: msg.Content})
-			}
-			assert.Equal(t, tt.turns, turns, "turns of %s", tt.subID)
-			assert.Equal(t, len(tt.turns), child.Session.MessageCount, "message count of %s", tt.subID)
-			assert.Equal(t, tt.userCount, child.Session.UserMessageCount, "user message count of %s", tt.subID)
-			assert.Equal(t, tt.startedAt, child.Session.StartedAt.UTC().Format(time.RFC3339),
-				"start of %s", tt.subID)
-			assert.Equal(t, tt.endedAt, child.Session.EndedAt.UTC().Format(time.RFC3339),
-				"end of %s", tt.subID)
-		})
-	}
 }
 
 func TestKiroProviderSubagentResultFallsBackToErrorMessage(t *testing.T) {
@@ -674,24 +591,15 @@ func TestKiroProviderSubExecutionWorkStopsWhenCancelled(t *testing.T) {
 	})
 }
 
-// A subagent transcript that cannot be read fails only that subagent and the
-// subagents no readable transcript spawns. Each error is keyed under the
-// session transcript, the source being parsed, because the engine discards a
-// whole outcome whose diagnostic names another source.
+// A subagent transcript that cannot be read fails only that subagent. Its
+// error is keyed under the session transcript, the source being parsed,
+// because the engine discards a whole outcome whose diagnostic names another
+// source.
 func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
 	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root,
-		testjsonl.KiroUserJSON("", "parent prompt"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildA, "coder", "task A"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildB, "coder", "task B"))
-	writeKiroTestSubExecution(t, transcript, kiroTestChildA,
-		testjsonl.KiroAssistantJSON("", "child A working"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildD, "coder", "readable nested task"))
-	unreadable := writeKiroTestSubExecution(t, transcript, kiroTestChildB,
-		testjsonl.KiroAssistantJSON("", "child B working"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "", kiroTestChildC, "coder", "nested task"))
-	nested := writeKiroTestSubExecution(t, transcript, kiroTestChildC, testjsonl.KiroAssistantJSON("", "child C working"))
-	writeKiroTestSubExecution(t, transcript, kiroTestChildD, testjsonl.KiroAssistantJSON("", "child D working"))
+	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+	writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child A working"))
+	unreadable := writeKiroTestSubExecution(t, transcript, kiroTestChildB, testjsonl.KiroAssistantJSON("", "child B working"))
 	require.NoError(t, os.Chmod(unreadable, 0))
 	t.Cleanup(func() { assert.NoError(t, os.Chmod(unreadable, 0o644)) })
 	if _, err := os.ReadFile(unreadable); err == nil {
@@ -711,23 +619,15 @@ func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
 	for _, result := range outcome.Results {
 		ids = append(ids, result.Result.Session.ID)
 	}
-	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA, "kiro:" + kiroTestChildD}, ids,
-		"the session and every subagent with a readable spawn record still parse")
-	require.Len(t, outcome.SourceErrors, 2)
-	for i, want := range []struct {
-		subID, path string
-		err         error
-	}{
-		{subID: kiroTestChildB, path: unreadable, err: os.ErrPermission},
-		{subID: kiroTestChildC, path: nested, err: errKiroSpawnRecordUnreadable},
-	} {
-		got := outcome.SourceErrors[i]
-		assert.Equal(t, transcript+"#"+want.subID, got.SourceKey)
-		assert.Equal(t, want.path, got.DisplayPath)
-		assert.Equal(t, "kiro:"+want.subID, got.SessionID)
-		assert.True(t, got.Retryable, "subagent %s is retried on the next sync", want.subID)
-		assert.ErrorIs(t, got.Err, want.err)
-	}
+	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA}, ids,
+		"the session and its readable subagent still parse")
+	require.Len(t, outcome.SourceErrors, 1)
+	got := outcome.SourceErrors[0]
+	assert.Equal(t, transcript+"#"+kiroTestChildB, got.SourceKey)
+	assert.Equal(t, unreadable, got.DisplayPath)
+	assert.Equal(t, "kiro:"+kiroTestChildB, got.SessionID)
+	assert.True(t, got.Retryable, "a read failure is retried on the next sync")
+	assert.ErrorIs(t, got.Err, os.ErrPermission)
 }
 
 // Memory admission charges a parse for every file it reads. Only sizes

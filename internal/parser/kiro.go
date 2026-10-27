@@ -308,8 +308,6 @@ const kiroSubagentToolName = "invoke_subagent"
 type kiroSubagentSpawn struct {
 	SubSessionID string
 	Name         string
-	Prompt       string
-	Timestamp    time.Time
 }
 
 // isKiroSubagentID reports whether id can name a subagent session. A
@@ -440,8 +438,8 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, error) {
 			if !isKiroSubagentID(subID) {
 				continue
 			}
-			spawn := kiroSubagentSpawn{SubSessionID: subID, Name: payload.Get("subAgentName").Str, Prompt: payload.Get("prompt").Str, Timestamp: timestamp}
-			input, err := json.Marshal(kiroSubagentInput{SubagentType: spawn.Name, Description: payload.Get("explanation").Str, Prompt: spawn.Prompt})
+			spawn := kiroSubagentSpawn{SubSessionID: subID, Name: payload.Get("subAgentName").Str}
+			input, err := json.Marshal(kiroSubagentInput{SubagentType: spawn.Name, Description: payload.Get("explanation").Str, Prompt: payload.Get("prompt").Str})
 			if err != nil {
 				return kiroCurrentTranscript{}, fmt.Errorf("encode Kiro subagent input in %s: %w", path, err)
 			}
@@ -588,16 +586,13 @@ func kiroSubExecutionFiles(root, transcript string) ([]kiroSubExecution, error) 
 	return files, nil
 }
 
-var errKiroSpawnRecordUnreadable = errors.New("spawn record unknown while a subagent transcript cannot be read")
-
 // parseKiroSubExecutions parses the subagent transcripts of a session as
 // child sessions. Each child links to the transcript whose sub_agent_start
-// names it, which is a sibling subagent for nested spawns, and inherits the
-// parent session's project, working directory, and machine. When a child
-// file cannot be read, it and every child no readable transcript spawns
-// become retryable per-session errors, so none is written without its spawn
-// prompt and parent link. Cancelling ctx stops the parse between subagent
-// files.
+// names it, which is a sibling subagent for nested spawns, takes its name
+// from that record, and inherits the parent session's project, working
+// directory, and machine. A child file that cannot be read becomes a
+// retryable per-session error. Cancelling ctx stops the parse between
+// subagent files.
 func parseKiroSubExecutions(
 	ctx context.Context, root string, parent *ParsedSession, parentSpawns []kiroSubagentSpawn,
 ) ([]ParseResult, []SourceError, error) {
@@ -654,25 +649,14 @@ func parseKiroSubExecutions(
 		recordFirstSpawner(id, transcript.Spawns)
 		parsed = append(parsed, childTranscript{path: path, subID: subID, id: id, transcript: transcript})
 	}
-	readFailed := len(sourceErrs) > 0
 	results := make([]ParseResult, 0, len(parsed))
 	for _, child := range parsed {
 		origin, known := origins[child.subID]
-		if !known && readFailed {
-			sourceErrs = append(sourceErrs, SourceError{
-				SourceKey: VirtualSourcePath(parent.File.Path, child.subID), DisplayPath: child.path,
-				SessionID: child.id, Err: errKiroSpawnRecordUnreadable, Retryable: true,
-			})
-			continue
-		}
 		parentID := parent.ID
 		if known && origin.parentID != child.id {
 			parentID = origin.parentID
 		}
 		transcript := child.transcript
-		if transcript.userMessageCount() == 0 {
-			transcript = transcript.withSpawnPrompt(origin.spawn)
-		}
 		startedAt, endedAt := transcript.bounds()
 		results = append(results, ParseResult{
 			Session: ParsedSession{
@@ -695,36 +679,6 @@ func parseKiroSubExecutions(
 		})
 	}
 	return results, sourceErrs, nil
-}
-
-// withSpawnPrompt starts a subagent transcript with the prompt its spawning
-// sub_agent_start delivered. kiro-cli records that prompt only in the
-// spawning transcript, so without it a subagent's transcript starts mid-task.
-// The copied turn is marked with the record type it came from.
-func (t kiroCurrentTranscript) withSpawnPrompt(spawn kiroSubagentSpawn) kiroCurrentTranscript {
-	prompt := strings.TrimSpace(spawn.Prompt)
-	if prompt == "" {
-		return t
-	}
-	messages := make([]ParsedMessage, 0, len(t.Messages)+1)
-	messages = append(messages, ParsedMessage{
-		Ordinal:       0,
-		Role:          RoleUser,
-		Content:       prompt,
-		Timestamp:     spawn.Timestamp,
-		ContentLength: len(prompt),
-		SourceType:    "sub_agent_start",
-	})
-	for _, msg := range t.Messages {
-		msg.Ordinal++
-		messages = append(messages, msg)
-	}
-	t.Messages = messages
-	t.FirstMessage = truncate(strings.ReplaceAll(prompt, "\n", " "), 300)
-	if !spawn.Timestamp.IsZero() && (t.EarliestMessage.IsZero() || spawn.Timestamp.Before(t.EarliestMessage)) {
-		t.EarliestMessage = spawn.Timestamp
-	}
-	return t
 }
 
 func kiroCurrentMessageTimestamp(value gjson.Result) time.Time {

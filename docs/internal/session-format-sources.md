@@ -3520,13 +3520,11 @@ schemas keep their existing ordering behavior.
     `kiro:sess_<id>` would collide with that session. Each spawn becomes an
     `invoke_subagent` Task tool call and result, and each subagent becomes
     session `kiro:<subSessionId>`, linked to the transcript whose
-    `sub_agent_start` names it (the top session when none does) and inheriting
-    its project and working directory. Because
-    kiro-cli writes a subagent's prompt only into the spawning transcript, a
-    subagent transcript with no user turn of its own starts with that prompt as
-    a user turn, timestamped from `sub_agent_start` and stored with
-    `source_type` `sub_agent_start`. The session source owns those child rows,
-    so a removed subagent transcript
+    `sub_agent_start` names it (the top session when none does), named by its
+    `subAgentName`, and inheriting its project and working directory. The
+    prompt stays on the spawning transcript's Task call; the subagent's own
+    transcript holds only what kiro-cli wrote there. The session source owns
+    those child rows, so a removed subagent transcript
     marks its session source-missing. Sessions without sub-executions files
     keep their previous fingerprint, and because every observed spawn record
     has a sub-executions file, sessions with spawns change fingerprint and are
