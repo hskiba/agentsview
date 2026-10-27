@@ -164,18 +164,19 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 		parentID     string
 		sessionName  string
 		firstMessage string
+		firstTurn    string
 	}{
 		{
 			name: "spawned by the session", subID: kiroTestChildA, parentID: parentID,
-			sessionName: "coder", firstMessage: "",
+			sessionName: "coder", firstMessage: "", firstTurn: "child A working",
 		},
 		{
 			name: "spawned by a sibling subagent", subID: kiroTestChildB, parentID: "kiro:" + kiroTestChildA,
-			sessionName: "reviewer", firstMessage: "",
+			sessionName: "reviewer", firstMessage: "", firstTurn: "child B working",
 		},
 		{
 			name: "never spawned", subID: kiroTestChildC, parentID: parentID,
-			sessionName: "", firstMessage: "orphan prompt",
+			sessionName: "", firstMessage: "orphan prompt", firstTurn: "orphan prompt",
 		},
 	}
 	for _, tt := range tests {
@@ -190,6 +191,9 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 			assert.Equal(t, "devbox", child.Session.Machine, "machine of %s", tt.subID)
 			assert.Equal(t, tt.sessionName, child.Session.SessionName, "session name of %s", tt.subID)
 			assert.Equal(t, tt.firstMessage, child.Session.FirstMessage, "first message of %s", tt.subID)
+			require.NotEmpty(t, child.Messages, "messages of %s", tt.subID)
+			assert.Equal(t, tt.firstTurn, child.Messages[0].Content,
+				"%s starts with its own first record", tt.subID)
 		})
 	}
 

@@ -3529,9 +3529,12 @@ schemas keep their existing ordering behavior.
     keep their previous fingerprint, and because every observed spawn record
     has a sub-executions file, sessions with spawns change fingerprint and are
     reparsed without a data-version bump. Limits: a session whose SQLite
-    duplicate outranks its current JSONL source emits no subagents, and a
+    duplicate outranks its current JSONL source emits no subagents; a
     `subSessionId` copied into two sessions is stored once, linked to
-    whichever spawning session synced last.
+    whichever spawning session synced last; and while a nested subagent's
+    spawning transcript is missing or unreadable, the subagent is unnamed and
+    parsed under the top session, though its stored parent stays on the
+    spawner through the archived Task call.
 
 ## Kiro IDE (`kiro-ide`)
 

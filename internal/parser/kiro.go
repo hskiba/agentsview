@@ -604,14 +604,14 @@ func parseKiroSubExecutions(
 		return nil, nil, nil
 	}
 	type spawnOrigin struct {
-		spawn    kiroSubagentSpawn
+		name     string
 		parentID string
 	}
 	origins := make(map[string]spawnOrigin)
 	recordFirstSpawner := func(spawnerID string, spawns []kiroSubagentSpawn) {
 		for _, spawn := range spawns {
 			if _, seen := origins[spawn.SubSessionID]; !seen {
-				origins[spawn.SubSessionID] = spawnOrigin{spawn: spawn, parentID: spawnerID}
+				origins[spawn.SubSessionID] = spawnOrigin{name: spawn.Name, parentID: spawnerID}
 			}
 		}
 	}
@@ -670,7 +670,7 @@ func parseKiroSubExecutions(
 				EndedAt:          endedAt,
 				MessageCount:     len(transcript.Messages),
 				UserMessageCount: transcript.userMessageCount(),
-				SessionName:      origin.spawn.Name,
+				SessionName:      origin.name,
 				ParentSessionID:  parentID,
 				RelationshipType: RelSubagent,
 				File:             FileInfo{Path: child.path, Size: transcript.Size, Mtime: transcript.ModTime.UnixNano()},
