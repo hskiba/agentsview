@@ -638,6 +638,15 @@ agentsview pg status --all     # show status for every configured PG target
 agentsview pg serve            # serve web UI from the default PG target (read-only)
 ```
 
+```bash
+AGENTSVIEW_DATA_DIR=/data agentsview pg serve --push-watch
+```
+
+Use `--push-watch` to ingest mounted sessions and serve them from PostgreSQL in
+one process; see
+[PostgreSQL Sync](https://agentsview.io/docs/pg-sync/#agentsview-pg-serve) for setup
+and shutdown.
+
 Opt-in [hosted raw processing](docs/hosted-raw-sync.md) lets `pg serve` parse
 uploaded sources directly into PostgreSQL. It requires explicit tenant/schema
 provisioning, a restricted runtime role, authentication and Linux isolation.
