@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"context"
 	"maps"
 	"os"
 	"path/filepath"
@@ -630,4 +631,28 @@ func TestKiroProviderFindSourceReportsSubagentProbeErrors(t *testing.T) {
 	require.ErrorAs(t, err, &pathErr, "finding %s through the looping %s should fail", kiroTestChildA, loop)
 	assert.Equal(t, loop, pathErr.Path, "the error names the probed subagent transcript")
 	assert.False(t, found)
+}
+
+// Fingerprinting and parsing a session read every subagent transcript, so a
+// cancellation that arrives after either has started must stop that work.
+func TestKiroProviderSubExecutionWorkStopsWhenCancelled(t *testing.T) {
+	root := t.TempDir()
+	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+	writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child A working"))
+	writeKiroTestSubExecution(t, transcript, kiroTestChildB, testjsonl.KiroAssistantJSON("", "child B working"))
+	provider := newKiroTestProvider(t, root)
+	sources, err := provider.Discover(t.Context())
+	require.NoError(t, err)
+	require.Len(t, sources, 1, "a session and its subagents are one source")
+
+	t.Run("parse", func(t *testing.T) {
+		// The first cancellation check passes; the context is cancelled by
+		// the second.
+		_, err := provider.Parse(newCancelOnErrCheckContext(t, 2), ParseRequest{Source: sources[0]})
+		require.ErrorIs(t, err, context.Canceled, "parse %s", sources[0].DisplayPath)
+	})
+	t.Run("fingerprint", func(t *testing.T) {
+		_, err := provider.Fingerprint(newCancelOnErrCheckContext(t, 2), sources[0])
+		require.ErrorIs(t, err, context.Canceled, "fingerprint %s", sources[0].DisplayPath)
+	})
 }

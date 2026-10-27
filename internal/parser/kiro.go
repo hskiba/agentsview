@@ -585,9 +585,10 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 // child sessions. Each child links to the transcript whose sub_agent_start
 // names it, which is a sibling subagent for nested spawns, and inherits the
 // parent session's project, working directory, and machine. A child file
-// that cannot be read becomes a retryable per-session error.
+// that cannot be read becomes a retryable per-session error. Cancelling ctx
+// stops the parse between subagent files.
 func parseCurrentSubExecutions(
-	root string, parent *ParsedSession, parentSpawns []kiroSubagentSpawn,
+	ctx context.Context, root string, parent *ParsedSession, parentSpawns []kiroSubagentSpawn,
 ) ([]ParseResult, []SourceError, error) {
 	files, err := kiroSubExecutionFiles(root, parent.File.Path)
 	if err != nil {
@@ -617,6 +618,9 @@ func parseCurrentSubExecutions(
 	var parsed []childTranscript
 	var sourceErrs []SourceError
 	for _, path := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		subID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 		transcript, err := readKiroCurrentTranscript(path)
 		if err != nil {

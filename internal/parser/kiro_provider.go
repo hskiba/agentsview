@@ -156,7 +156,7 @@ func (p *kiroProvider) parseCurrentJSONL(
 		// written parent never reconciles its stored subagents away.
 		return ParseOutcome{ResultSetComplete: true, SkipReason: SkipNoSession}, nil
 	}
-	children, sourceErrs, err := parseCurrentSubExecutions(src.Root, sess, transcript.Spawns)
+	children, sourceErrs, err := parseCurrentSubExecutions(ctx, src.Root, sess, transcript.Spawns)
 	if err != nil {
 		return ParseOutcome{}, err
 	}
@@ -1113,7 +1113,7 @@ func (s kiroSourceSet) Fingerprint(
 		}
 		hash, err = hashKiroJSONLSource(src.Path, sidecar)
 		if err == nil && len(subExecutions) > 0 {
-			hash, err = extendKiroHashWithSubExecutions(hash, subExecutions)
+			hash, err = extendKiroHashWithSubExecutions(ctx, hash, subExecutions)
 		}
 	case kiroSourceLegacyJSONL:
 		hash, err = hashKiroJSONLSource(src.Path, sidecar)
@@ -1150,11 +1150,13 @@ func hashKiroJSONLSource(transcript, sidecar string) (string, error) {
 // extendKiroHashWithSubExecutions folds a session's subagent transcripts
 // into its source hash. Sessions without subagent transcripts keep the
 // plain transcript-and-sidecar hash, so archived sessions are not reparsed.
-func extendKiroHashWithSubExecutions(base string, paths []string) (string, error) {
+func extendKiroHashWithSubExecutions(
+	ctx context.Context, base string, paths []string,
+) (string, error) {
 	h := sha256.New()
 	h.Write([]byte("kiro-current-sub-executions\x00" + base))
 	for _, path := range paths {
-		fileHash, err := hashJSONLSourceFile(path)
+		fileHash, err := hashJSONLSourceFileContext(ctx, path)
 		if err != nil {
 			return "", err
 		}
