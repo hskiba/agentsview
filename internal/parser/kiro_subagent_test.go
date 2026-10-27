@@ -2,6 +2,7 @@ package parser
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -797,5 +798,57 @@ func TestKiroProviderParseSourceSizeChargesTheWholeSQLiteStore(t *testing.T) {
 		size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), source)
 		require.NoError(t, err, "size %s", source.DisplayPath)
 		assert.Equal(t, info.Size(), size, "size %s", source.DisplayPath)
+	}
+}
+
+// FindSource probes every session's sub-executions directory for IDs shaped
+// like a subagent, which includes legacy session names. One session whose
+// directory cannot be probed must not hide a source found elsewhere.
+func TestKiroProviderFindSourceIgnoresOtherSessionsProbeFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		breakDir func(t *testing.T, dir string)
+	}{
+		{
+			name: "sub-executions is a file",
+			breakDir: func(t *testing.T, dir string) {
+				writeSourceFile(t, dir, "not a directory")
+			},
+		},
+		{
+			name: "sub-executions is unreadable",
+			breakDir: func(t *testing.T, dir string) {
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				require.NoError(t, os.Chmod(dir, 0))
+				t.Cleanup(func() { assert.NoError(t, os.Chmod(dir, 0o755)) })
+				if _, err := os.Stat(filepath.Join(dir, kiroTestChildA+".jsonl")); !errors.Is(err, os.ErrPermission) {
+					t.Skip("directory permissions do not block lookups for this user")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+			writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child"))
+			legacy := filepath.Join(root, "legacy-session.jsonl")
+			writeSourceFile(t, legacy, kiroProviderJSONLFixture("Legacy question"))
+			other := filepath.Join(root, "workspace", "sess_00000000000000ff")
+			writeSourceFile(t, filepath.Join(other, "messages.jsonl"),
+				testjsonl.JoinJSONL(testjsonl.KiroUserJSON("", "other prompt")))
+			tt.breakDir(t, filepath.Join(other, "sub-executions"))
+			provider := newKiroTestProvider(t, root)
+
+			for _, want := range []struct{ rawID, path string }{
+				{rawID: kiroTestChildA, path: transcript},
+				{rawID: "legacy-session", path: legacy},
+			} {
+				found, ok, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: want.rawID})
+				require.NoError(t, err, "find %s", want.rawID)
+				require.True(t, ok, "find %s", want.rawID)
+				assert.Equal(t, want.path, found.DisplayPath, "find %s", want.rawID)
+			}
+		})
 	}
 }

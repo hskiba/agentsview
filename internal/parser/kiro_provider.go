@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 var _ Provider = (*kiroProvider)(nil)
@@ -949,6 +950,7 @@ func (s kiroSourceSet) FindSource(
 	}
 	var candidates []SourceRef
 	candidates = append(candidates, hinted...)
+	var probeErr error
 	for _, root := range s.roots {
 		dbPath, dbPathErr := kiroSQLiteDBPathChecked(root)
 		if dbPathErr != nil {
@@ -994,7 +996,12 @@ func (s kiroSourceSet) FindSource(
 				filepath.Dir(file.Path), kiroSubExecutionsDirName, req.RawSessionID+".jsonl",
 			))
 			if err != nil {
-				return SourceRef{}, false, fmt.Errorf("probe Kiro sub-execution: %w", err)
+				// Reported only when no source is found, so one session's
+				// unreadable directory cannot hide another session's source.
+				if probeErr == nil {
+					probeErr = fmt.Errorf("probe Kiro sub-execution: %w", err)
+				}
+				continue
 			}
 			if !subagent {
 				continue
@@ -1024,7 +1031,7 @@ func (s kiroSourceSet) FindSource(
 	if source, ok := s.bestSource(candidates); ok {
 		return source, true, nil
 	}
-	return SourceRef{}, false, nil
+	return SourceRef{}, false, probeErr
 }
 
 func kiroSourceExists(ctx context.Context, source SourceRef) bool {
@@ -1843,7 +1850,7 @@ func kiroRegularFileUnderRoot(root, path string) bool {
 func kiroRegularFileUnderRootChecked(root, path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
 			return false, nil
 		}
 		return false, err
