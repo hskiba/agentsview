@@ -627,7 +627,7 @@ func parseKiroSubExecutions(
 		transcript, err := readKiroCurrentTranscript(path)
 		if err != nil {
 			sourceErrs = append(sourceErrs, SourceError{
-				SourceKey: parent.File.Path + "#" + subID, DisplayPath: path,
+				SourceKey: VirtualSourcePath(parent.File.Path, subID), DisplayPath: path,
 				SessionID: id, Err: err, Retryable: true,
 			})
 			continue
