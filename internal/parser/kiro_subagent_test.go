@@ -164,12 +164,18 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 		sessionName  string
 		firstMessage string
 	}{
-		{name: "spawned by the session", subID: kiroTestChildA, parentID: parentID,
-			sessionName: "coder", firstMessage: "do the subtask"},
-		{name: "spawned by a sibling subagent", subID: kiroTestChildB, parentID: "kiro:" + kiroTestChildA,
-			sessionName: "reviewer", firstMessage: "review the change"},
-		{name: "never spawned", subID: kiroTestChildC, parentID: parentID,
-			sessionName: "", firstMessage: "orphan prompt"},
+		{
+			name: "spawned by the session", subID: kiroTestChildA, parentID: parentID,
+			sessionName: "coder", firstMessage: "do the subtask",
+		},
+		{
+			name: "spawned by a sibling subagent", subID: kiroTestChildB, parentID: "kiro:" + kiroTestChildA,
+			sessionName: "reviewer", firstMessage: "review the change",
+		},
+		{
+			name: "never spawned", subID: kiroTestChildC, parentID: parentID,
+			sessionName: "", firstMessage: "orphan prompt",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -487,15 +493,21 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 		wantScopes []StoredSourceHintScope
 		symlink    bool
 	}{
-		{name: "workspace session subagent", path: child, event: "write",
-			wantSource: transcript, wantScopes: sessionScopes},
-		{name: "root-level session subagent", path: rootChild, event: "write",
+		{
+			name: "workspace session subagent", path: child, event: "write",
+			wantSource: transcript, wantScopes: sessionScopes,
+		},
+		{
+			name: "root-level session subagent", path: rootChild, event: "write",
 			wantSource: rootTranscript, wantScopes: []StoredSourceHintScope{
 				{Path: rootTranscript},
 				{Path: filepath.Join(root, rootSessionRawID, "sub-executions")},
-			}},
-		{name: "removed subagent of an existing session", path: removed, event: "remove",
-			wantSource: transcript, wantScopes: sessionScopes},
+			},
+		},
+		{
+			name: "removed subagent of an existing session", path: removed, event: "remove",
+			wantSource: transcript, wantScopes: sessionScopes,
+		},
 		{name: "history workspace", path: history, event: "write"},
 		{name: "snapshots workspace", path: snapshot, event: "write"},
 		{name: "no session directory", path: noSessionDir, event: "write"},
