@@ -3530,16 +3530,16 @@ schemas keep their existing ordering behavior.
     and inheriting its project and working directory. The prompt stays on the
     spawning transcript's Task call; the subagent's own transcript holds only
     what kiro-cli wrote there. The session source owns those child rows, so a
-    removed subagent transcript marks its session source-missing. Sessions without sub-executions files keep their previous
-    fingerprint, and because every observed spawn record has a sub-executions
-    file, sessions with spawns change fingerprint and are reparsed without a
-    data-version bump. Limits: a session whose SQLite duplicate outranks its
-    current JSONL source emits no subagents; a `subSessionId` copied into two
-    sessions is stored once, linked to whichever spawning session synced last;
-    and while a nested subagent's spawning transcript is missing or
-    unreadable, the subagent is unnamed and parsed under the top session,
-    though its stored parent stays on the spawner through the archived Task
-    call.
+    removed subagent transcript marks its session source-missing. Sessions
+    without sub-executions files keep their previous fingerprint, and because
+    every observed spawn record has a sub-executions file, sessions with
+    spawns change fingerprint and are reparsed without a data-version bump.
+    Limits: a session whose SQLite duplicate outranks its current JSONL source
+    emits no subagents; a `subSessionId` copied into two sessions is stored
+    once, linked to whichever spawning session synced last; and while a nested
+    subagent's spawning transcript is missing or unreadable, the subagent is
+    unnamed and parsed under the top session, though its stored parent stays
+    on the spawner through the archived Task call.
 
 ## Kiro IDE (`kiro-ide`)
 
