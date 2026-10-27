@@ -942,9 +942,16 @@ func (s kiroSourceSet) FindSource(
 			// A subagent session is parsed by the session that holds its
 			// sub-executions transcript. Probe that one file before building
 			// a source so lookups of other IDs stay one stat per session.
-			if !probeSubagent || !kiroRegularFileUnderRoot(root, filepath.Join(
+			if !probeSubagent {
+				continue
+			}
+			subagent, err := kiroRegularFileUnderRootChecked(root, filepath.Join(
 				filepath.Dir(file.Path), kiroSubExecutionsDirName, req.RawSessionID+".jsonl",
-			)) {
+			))
+			if err != nil {
+				return SourceRef{}, false, fmt.Errorf("probe Kiro sub-execution: %w", err)
+			}
+			if !subagent {
 				continue
 			}
 			if source, ok := s.sourceRef(root, file.Path, false); ok {

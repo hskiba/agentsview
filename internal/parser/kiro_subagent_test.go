@@ -611,3 +611,23 @@ func TestKiroProviderFindSourceResolvesSubagentToItsSession(t *testing.T) {
 		})
 	}
 }
+
+// A subagent probe that fails for a reason other than absence, such as a
+// symlink loop, must surface instead of reading as "no such subagent".
+func TestKiroProviderFindSourceReportsSubagentProbeErrors(t *testing.T) {
+	root := t.TempDir()
+	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+	loop := kiroTestSubExecutionPath(transcript, kiroTestChildA)
+	require.NoError(t, os.MkdirAll(filepath.Dir(loop), 0o755))
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	provider := newKiroTestProvider(t, root)
+
+	_, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: kiroTestChildA})
+
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr, "finding %s through the looping %s should fail", kiroTestChildA, loop)
+	assert.Equal(t, loop, pathErr.Path, "the error names the probed subagent transcript")
+	assert.False(t, found)
+}
