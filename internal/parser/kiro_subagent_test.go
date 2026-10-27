@@ -413,6 +413,7 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 		jsonExtID        = "00000000-0000-4000-8000-000000000005"
 		symlinkID        = "00000000-0000-4000-8000-000000000006"
 		removedID        = "00000000-0000-4000-8000-000000000007"
+		directoryID      = "00000000-0000-4000-8000-000000000008"
 	)
 	root := t.TempDir()
 	childLine := testjsonl.KiroAssistantJSON("2026-06-01T10:00:02Z", "child working")
@@ -446,6 +447,8 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 	symlink := kiroTestSubExecutionPath(transcript, symlinkID)
 	symlinkErr := os.Symlink(outside, symlink)
 	removed := kiroTestSubExecutionPath(transcript, removedID)
+	directory := kiroTestSubExecutionPath(transcript, directoryID)
+	require.NoError(t, os.MkdirAll(directory, 0o755))
 
 	provider := newKiroTestProvider(t, root)
 	scoper, ok := provider.(StoredSourceHintScopeProvider)
@@ -500,6 +503,7 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 		{name: "invalid ID", path: badID, event: "write"},
 		{name: "json extension", path: jsonExt, event: "write"},
 		{name: "session-shaped ID", path: sessionShaped, event: "write"},
+		{name: "directory named like a transcript", path: directory, event: "write"},
 		{name: "symlink escaping the root", path: symlink, event: "write", symlink: true},
 	}
 	for _, tt := range tests {
