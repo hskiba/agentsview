@@ -709,3 +709,94 @@ func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
 	assert.True(t, got.Retryable, "a read failure is retried on the next sync")
 	assert.ErrorIs(t, got.Err, os.ErrPermission)
 }
+
+// Memory admission charges a parse for every file it reads. Only sizes
+// matter here, so each file is filler of the listed size; metadata files hold
+// a padded title because discovery decodes them.
+func TestKiroProviderParseSourceSizeCoversEveryParsedFile(t *testing.T) {
+	session := filepath.Join("workspace", kiroTestParentRawID)
+	subExecutions := filepath.Join(session, "sub-executions")
+	tests := []struct {
+		name  string
+		files map[string]int
+		want  int64
+	}{
+		{
+			name: "session with subagent transcripts",
+			files: map[string]int{
+				filepath.Join(session, "messages.jsonl"):                       1000,
+				filepath.Join(session, "session.json"):                         200,
+				filepath.Join(subExecutions, kiroTestChildA+".jsonl"):          30,
+				filepath.Join(subExecutions, kiroTestChildB+".jsonl"):          4,
+				filepath.Join(subExecutions, "bad.id.jsonl"):                   50000,
+				filepath.Join(subExecutions, kiroTestChildC+".txt"):            50000,
+				filepath.Join(subExecutions, kiroTestSessionShapedID+".jsonl"): 50000,
+			},
+			want: 1234,
+		},
+		{
+			name: "session without subagent transcripts",
+			files: map[string]int{
+				filepath.Join(session, "messages.jsonl"): 1000,
+				filepath.Join(session, "session.json"):   200,
+			},
+			want: 1200,
+		},
+		{
+			name: "legacy transcript and its metadata",
+			files: map[string]int{
+				"legacy-session.jsonl": 1000,
+				"legacy-session.json":  200,
+			},
+			want: 1200,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, size := range tt.files {
+				content := strings.Repeat("x", size)
+				if filepath.Ext(name) == ".json" {
+					content = `{"title":"` + strings.Repeat("x", size-len(`{"title":""}`)) + `"}`
+				}
+				writeSourceFile(t, filepath.Join(root, name), content)
+			}
+			provider := newKiroTestProvider(t, root)
+			sources, err := provider.Discover(t.Context())
+			require.NoError(t, err)
+			require.Len(t, sources, 1)
+			require.Implements(t, (*ParseSourceSizer)(nil), provider)
+
+			size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), sources[0])
+
+			require.NoError(t, err, "size %s", sources[0].DisplayPath)
+			assert.Equal(t, tt.want, size)
+		})
+	}
+}
+
+// The SQLite store keeps the size the engine charged before Kiro reported
+// its own: the whole database file.
+func TestKiroProviderParseSourceSizeChargesTheWholeSQLiteStore(t *testing.T) {
+	root := t.TempDir()
+	dbPath, db := newKiroProviderSQLiteDBAt(t, root)
+	seedKiroSQLiteSession(t, db, "/home/user/code/kiro-app", "sqlite-session",
+		readKiroFixture(t, "standard_payload.json"), 1779012000000, 1779012030000)
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	require.Positive(t, info.Size())
+	provider := newKiroTestProvider(t, root)
+	physical, err := provider.Discover(t.Context())
+	require.NoError(t, err)
+	require.Len(t, physical, 1)
+	member, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: "sqlite-session"})
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Implements(t, (*ParseSourceSizer)(nil), provider)
+
+	for _, source := range []SourceRef{physical[0], member} {
+		size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), source)
+		require.NoError(t, err, "size %s", source.DisplayPath)
+		assert.Equal(t, info.Size(), size, "size %s", source.DisplayPath)
+	}
+}

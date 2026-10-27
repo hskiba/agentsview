@@ -101,6 +101,53 @@ func (p *kiroProvider) PreservedSessionIDs(source SourceRef) []string {
 	return append([]string(nil), src.PreservedIDs...)
 }
 
+// ParseSourceSize reports the bytes a parse reads: a session transcript with
+// its sidecar and subagent transcripts, a legacy transcript with its metadata
+// file, or the SQLite store.
+func (p *kiroProvider) ParseSourceSize(ctx context.Context, source SourceRef) (int64, error) {
+	src, ok := p.sources.sourceFromRef(source)
+	if !ok {
+		return 0, errors.New("kiro source path unavailable")
+	}
+	paths := []string{src.Path}
+	switch src.Kind {
+	case kiroSourceSQLiteDB, kiroSourceSQLiteSession:
+		paths = []string{src.DBPath}
+	case kiroSourceCurrentJSONL:
+		if sidecar, ok := kiroCurrentSidecarPath(p.sources.roots, src.Path); ok {
+			paths = append(paths, sidecar)
+		}
+		subExecutions, err := kiroSubExecutionFiles(src.Root, src.Path)
+		if err != nil {
+			return 0, err
+		}
+		paths = append(paths, subExecutions...)
+	case kiroSourceLegacyJSONL:
+		sidecar, found, err := kiroLegacySidecarPath(p.sources.roots, src.Path)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			paths = append(paths, sidecar)
+		}
+	}
+	var size int64
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		size += info.Size()
+	}
+	return size, nil
+}
+
 func (p *kiroProvider) PersistentArchiveSource(
 	path string, fullSessionID string,
 ) (string, bool) {
