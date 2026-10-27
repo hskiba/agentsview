@@ -102,9 +102,6 @@ func (p *kiroProvider) PreservedSessionIDs(source SourceRef) []string {
 	return append([]string(nil), src.PreservedIDs...)
 }
 
-// ParseSourceSize reports the bytes a parse reads: a session transcript with
-// its sidecar and subagent transcripts, a legacy transcript with its metadata
-// file, or the SQLite store.
 func (p *kiroProvider) ParseSourceSize(ctx context.Context, source SourceRef) (int64, error) {
 	src, ok := p.sources.sourceFromRef(source)
 	if !ok {
@@ -1247,20 +1244,17 @@ func KiroSQLiteSourcePresent(source SourceRef) bool {
 	return ok && IsRegularFile(src.DBPath)
 }
 
-// IsKiroSessionTranscriptPath reports whether path names a current-layout
-// session transcript, sess_<id>/messages.jsonl, whose source emits the session
-// and its subagents.
+// IsKiroSessionTranscriptPath reports whether path is a current-layout
+// sess_<id>/messages.jsonl, whose source emits the session and its subagents.
 func IsKiroSessionTranscriptPath(path string) bool {
 	path = filepath.Clean(path)
 	return filepath.Base(path) == "messages.jsonl" &&
 		isKiroCurrentSessionDir(filepath.Base(filepath.Dir(path)))
 }
 
-// KiroSessionSourceMtime returns the session watcher's equality-only change
-// token for a session transcript under roots: a stat digest of the
-// transcript, its sidecar, and each subagent transcript by name, so a change
-// to any file the session's source parses changes it. ok is false for other
-// paths; a missing transcript returns 0.
+// KiroSessionSourceMtime is the session watcher's change token for a session
+// transcript under roots: a stat digest of every file its source parses. ok
+// is false for other paths; a missing transcript returns 0.
 func KiroSessionSourceMtime(roots []string, path string) (int64, bool, error) {
 	roots = cleanJSONLRoots(roots)
 	for _, root := range roots {
