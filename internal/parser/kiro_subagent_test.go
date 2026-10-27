@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"context"
 	"errors"
 	"maps"
 	"os"
@@ -20,7 +19,6 @@ const (
 	kiroTestParentRawID = "sess_0123456789abcdef"
 	kiroTestChildA      = "11111111-2222-3333-4444-555555555555"
 	kiroTestChildB      = "66666666-7777-8888-9999-000000000000"
-	kiroTestChildC      = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	kiroTestChildD      = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
 	// kiroTestSessionShapedID is a subagent ID shaped like a top-level
 	// session directory; stored as kiro:<id> it would collide with that
@@ -63,23 +61,23 @@ func newKiroTestProvider(t *testing.T, root string) Provider {
 	return provider
 }
 
-// parseKiroTestSessions parses the single session source under root and
-// returns its results by session ID.
+// parseKiroTestSessions discovers and parses every source under root and
+// returns the sessions they emit by session ID. Each source emits at most
+// one session.
 func parseKiroTestSessions(t *testing.T, root string) map[string]ParseResult {
 	t.Helper()
 	provider := newKiroTestProvider(t, root)
 	sources, err := provider.Discover(t.Context())
 	require.NoError(t, err)
-	require.Len(t, sources, 1, "a session and its subagents are one source")
-	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0]})
-	require.NoError(t, err, "parse %s", sources[0].DisplayPath)
-	require.Empty(t, outcome.SourceErrors, "parse %s", sources[0].DisplayPath)
-	require.NotEmpty(t, outcome.Results, "parse %s", sources[0].DisplayPath)
-	assert.Equal(t, "kiro:"+kiroTestParentRawID, outcome.Results[0].Result.Session.ID,
-		"the parent session comes first")
-	byID := make(map[string]ParseResult, len(outcome.Results))
-	for _, result := range outcome.Results {
-		byID[result.Result.Session.ID] = result.Result
+	byID := make(map[string]ParseResult, len(sources))
+	for _, source := range sources {
+		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source})
+		require.NoError(t, err, "parse %s", source.DisplayPath)
+		require.Empty(t, outcome.SourceErrors, "parse %s", source.DisplayPath)
+		require.LessOrEqual(t, len(outcome.Results), 1, "parse %s", source.DisplayPath)
+		for _, result := range outcome.Results {
+			byID[result.Result.Session.ID] = result.Result
+		}
 	}
 	return byID
 }
@@ -104,7 +102,7 @@ func kiroTestToolResults(result ParseResult) map[string]string {
 	return results
 }
 
-func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
+func TestKiroProviderParsesSubagentTranscriptsAsSubagentSessions(t *testing.T) {
 	root := t.TempDir()
 	transcript := writeKiroTestSession(t, root,
 		testjsonl.KiroUserJSON("2026-06-01T10:00:00Z", "parent prompt"),
@@ -128,9 +126,6 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 	writeKiroTestSubExecution(t, transcript, kiroTestChildB,
 		testjsonl.KiroAssistantJSON("2026-06-01T10:00:03Z", "child B working"),
 	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildC,
-		testjsonl.KiroUserJSON("2026-06-01T10:00:04Z", "orphan prompt"),
-	)
 	// Blank content is not a record the parser accepts.
 	writeKiroTestSubExecution(t, transcript, kiroTestChildD,
 		testjsonl.KiroUserJSON("2026-06-01T10:00:05Z", "   "),
@@ -140,15 +135,16 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 	byID := parseKiroTestSessions(t, root)
 	parentID := "kiro:" + kiroTestParentRawID
 	require.ElementsMatch(t,
-		[]string{parentID, "kiro:" + kiroTestChildA, "kiro:" + kiroTestChildB, "kiro:" + kiroTestChildC},
+		[]string{parentID, "kiro:" + kiroTestChildA, "kiro:" + kiroTestChildB},
 		slices.Collect(maps.Keys(byID)),
 		"subagent %s has no accepted records and must not become a session", kiroTestChildD)
 	parent := byID[parentID]
+	assert.Empty(t, parent.Session.ParentSessionID, "the session is top-level")
+	assert.Equal(t, "Parent session", parent.Session.SessionName)
 
 	parentCalls := kiroTestToolCalls(parent)
 	assert.Equal(t, []string{kiroTestChildA}, slices.Sorted(maps.Keys(parentCalls)),
 		"spawns of ../escape and %s are not valid subagent IDs", kiroTestSessionShapedID)
-	require.Contains(t, parentCalls, kiroTestChildA, "the parent should record the spawn of %s", kiroTestChildA)
 	spawn := parentCalls[kiroTestChildA]
 	assert.Equal(t, "invoke_subagent", spawn.ToolName)
 	assert.Equal(t, "Task", spawn.Category)
@@ -159,38 +155,25 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 	assert.Equal(t, map[string]string{kiroTestChildA: `"subtask done"`}, kiroTestToolResults(parent))
 
 	tests := []struct {
-		name         string
-		subID        string
-		parentID     string
-		sessionName  string
-		firstMessage string
-		firstTurn    string
+		name      string
+		subID     string
+		firstTurn string
 	}{
-		{
-			name: "spawned by the session", subID: kiroTestChildA, parentID: parentID,
-			sessionName: "coder", firstMessage: "", firstTurn: "child A working",
-		},
-		{
-			name: "spawned by a sibling subagent", subID: kiroTestChildB, parentID: "kiro:" + kiroTestChildA,
-			sessionName: "reviewer", firstMessage: "", firstTurn: "child B working",
-		},
-		{
-			name: "never spawned", subID: kiroTestChildC, parentID: parentID,
-			sessionName: "", firstMessage: "orphan prompt", firstTurn: "orphan prompt",
-		},
+		{name: "spawned by the session", subID: kiroTestChildA, firstTurn: "child A working"},
+		{name: "spawned by another subagent", subID: kiroTestChildB, firstTurn: "child B working"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Contains(t, byID, "kiro:"+tt.subID, "subagent transcript %s should be emitted", tt.subID)
 			child := byID["kiro:"+tt.subID]
-			assert.Equal(t, tt.parentID, child.Session.ParentSessionID, "parent of %s", tt.subID)
+			// The subagent linker moves a nested subagent onto the subagent
+			// whose Task call names it.
+			assert.Equal(t, parentID, child.Session.ParentSessionID, "parent of %s", tt.subID)
 			assert.Equal(t, RelSubagent, child.Session.RelationshipType, "relationship of %s", tt.subID)
 			assert.Equal(t, kiroTestSubExecutionPath(transcript, tt.subID), child.Session.File.Path)
 			assert.Equal(t, parent.Session.Project, child.Session.Project, "project of %s", tt.subID)
 			assert.Equal(t, "/home/user/code/kiro-app", child.Session.Cwd, "cwd of %s", tt.subID)
 			assert.Equal(t, "devbox", child.Session.Machine, "machine of %s", tt.subID)
-			assert.Equal(t, tt.sessionName, child.Session.SessionName, "session name of %s", tt.subID)
-			assert.Equal(t, tt.firstMessage, child.Session.FirstMessage, "first message of %s", tt.subID)
+			assert.Empty(t, child.Session.SessionName, "the session title belongs to the spawning session")
 			require.NotEmpty(t, child.Messages, "messages of %s", tt.subID)
 			assert.Equal(t, tt.firstTurn, child.Messages[0].Content,
 				"%s starts with its own first record", tt.subID)
@@ -289,62 +272,7 @@ func TestKiroProviderSubagentCompletionResult(t *testing.T) {
 	}
 }
 
-// kiro-cli writes every subagent transcript flat in sub-executions, so a
-// subagent's spawner is found by the sub_agent_start that names it, not by
-// where its file sits.
-func TestKiroProviderLinksNestedSubagentsToTheirSpawner(t *testing.T) {
-	root := t.TempDir()
-	parentID := "kiro:" + kiroTestParentRawID
-	transcript := writeKiroTestSession(t, root,
-		testjsonl.KiroUserJSON("2026-06-01T10:00:00Z", "parent prompt"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:01Z",
-			kiroTestChildB, "reviewer", "review the change"),
-	)
-	// Child C's file sorts after child A's, the subagent it spawns. It also
-	// names child B, which the session already spawned.
-	writeKiroTestSubExecution(t, transcript, kiroTestChildC,
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:02Z", "child C working"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:03Z",
-			kiroTestChildA, "coder", "do the subtask"),
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:04Z",
-			kiroTestChildB, "reviewer", "review the change again"),
-	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildA,
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:05Z", "child A working"),
-	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildB,
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:06Z", "child B working"),
-	)
-	writeKiroTestSubExecution(t, transcript, kiroTestChildD,
-		testjsonl.KiroSubAgentStartJSON(kiroTestStartRecordID, "2026-06-01T10:00:07Z",
-			kiroTestChildD, "looper", "spawn myself"),
-		testjsonl.KiroAssistantJSON("2026-06-01T10:00:08Z", "child D working"),
-	)
-
-	byID := parseKiroTestSessions(t, root)
-	tests := []struct {
-		name       string
-		subID      string
-		wantParent string
-	}{
-		{name: "spawner file sorts after its subagent", subID: kiroTestChildA, wantParent: "kiro:" + kiroTestChildC},
-		{name: "session spawn outranks a subagent naming the same ID", subID: kiroTestChildB, wantParent: parentID},
-		{name: "subagent naming itself links to the session", subID: kiroTestChildD, wantParent: parentID},
-		{name: "subagent nobody spawned links to the session", subID: kiroTestChildC, wantParent: parentID},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Contains(t, byID, "kiro:"+tt.subID, "subagent transcript %s should be emitted", tt.subID)
-			assert.Equal(t, tt.wantParent, byID["kiro:"+tt.subID].Session.ParentSessionID,
-				"parent of subagent %s", tt.subID)
-		})
-	}
-}
-
-// Subagent transcript paths are classified by three seams: the session parse
-// that lists sub-executions, the watcher's changed-path mapping, and the
-// lookup of a stored file path. Every lookalike must be rejected by each.
-func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
+func TestKiroProviderSubagentPathsAcrossSeams(t *testing.T) {
 	const (
 		rootSessionRawID = kiroTestSessionShapedID
 		nestedID         = "00000000-0000-4000-8000-000000000001"
@@ -395,54 +323,32 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 	scoper, ok := provider.(StoredSourceHintScopeProvider)
 	require.True(t, ok, "the Kiro provider should declare stored source hint scopes")
 
-	t.Run("parse", func(t *testing.T) {
+	t.Run("discover", func(t *testing.T) {
 		sources, err := provider.Discover(t.Context())
 		require.NoError(t, err)
-		type emitted struct{ ID, Path string }
-		var got []emitted
+		var paths []string
 		for _, source := range sources {
-			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source})
-			require.NoError(t, err, "parse %s", source.DisplayPath)
-			assert.Empty(t, outcome.SourceErrors, "parse %s", source.DisplayPath)
-			for _, result := range outcome.Results {
-				got = append(got, emitted{ID: result.Result.Session.ID, Path: result.Result.Session.File.Path})
-			}
+			paths = append(paths, source.DisplayPath)
 		}
-		assert.ElementsMatch(t, []emitted{
-			{ID: "kiro:" + kiroTestParentRawID, Path: transcript},
-			{ID: "kiro:" + kiroTestChildA, Path: child},
-			{ID: "kiro:" + rootSessionRawID, Path: rootTranscript},
-			{ID: "kiro:" + kiroTestChildB, Path: rootChild},
-		}, got, "only regular <id>.jsonl files directly in a session's sub-executions are subagents")
+		assert.ElementsMatch(t, []string{transcript, child, rootTranscript, rootChild}, paths,
+			"only regular <id>.jsonl files directly in a session's sub-executions are subagents")
 	})
 
-	sessionScopes := []StoredSourceHintScope{
-		{Path: transcript},
-		{Path: filepath.Join(sessDir, "sub-executions")},
-	}
 	tests := []struct {
-		name       string
-		path       string
-		event      string
-		wantSource string // owning messages.jsonl; empty when rejected
-		wantScopes []StoredSourceHintScope
-		symlink    bool
+		name  string
+		path  string
+		event string
+		// wantChanged is the source an event refreshes; empty when none is.
+		wantChanged string
+		// wantFound is the source a stored path resolves to; empty when
+		// rejected. A removed transcript still resolves, so its session can
+		// be marked source-missing.
+		wantFound string
+		symlink   bool
 	}{
-		{
-			name: "workspace session subagent", path: child, event: "write",
-			wantSource: transcript, wantScopes: sessionScopes,
-		},
-		{
-			name: "root-level session subagent", path: rootChild, event: "write",
-			wantSource: rootTranscript, wantScopes: []StoredSourceHintScope{
-				{Path: rootTranscript},
-				{Path: filepath.Join(root, rootSessionRawID, "sub-executions")},
-			},
-		},
-		{
-			name: "removed subagent of an existing session", path: removed, event: "remove",
-			wantSource: transcript, wantScopes: sessionScopes,
-		},
+		{name: "workspace session subagent", path: child, event: "write", wantChanged: child, wantFound: child},
+		{name: "root-level session subagent", path: rootChild, event: "write", wantChanged: rootChild, wantFound: rootChild},
+		{name: "removed subagent of an existing session", path: removed, event: "remove", wantFound: removed},
 		{name: "history workspace", path: history, event: "write"},
 		{name: "snapshots workspace", path: snapshot, event: "write"},
 		{name: "no session directory", path: noSessionDir, event: "write"},
@@ -461,299 +367,87 @@ func TestKiroProviderSubExecutionPathsAcrossSeams(t *testing.T) {
 			req := ChangedPathRequest{Path: tt.path, EventKind: tt.event, WatchRoot: root}
 			changed, err := provider.SourcesForChangedPath(t.Context(), req)
 			require.NoError(t, err, "%s event for %s", tt.event, tt.path)
-			var changedPaths []string
+			var changedPaths, wantChanged []string
 			for _, source := range changed {
 				changedPaths = append(changedPaths, source.DisplayPath)
 			}
-			var wantChanged []string
-			if tt.wantSource != "" {
-				wantChanged = []string{tt.wantSource}
+			if tt.wantChanged != "" {
+				wantChanged = []string{tt.wantChanged}
 			}
 			assert.Equal(t, wantChanged, changedPaths, "sources for a %s event on %s", tt.event, tt.path)
-			assert.Equal(t, tt.wantScopes, scoper.StoredSourceHintScopes(req),
+			var wantScopes []StoredSourceHintScope
+			if tt.wantFound != "" {
+				wantScopes = []StoredSourceHintScope{{Path: tt.wantFound}}
+			}
+			assert.Equal(t, wantScopes, scoper.StoredSourceHintScopes(req),
 				"stored source scopes for a %s event on %s", tt.event, tt.path)
 
 			found, ok, err := provider.FindSource(t.Context(), FindSourceRequest{StoredFilePath: tt.path})
 			require.NoError(t, err, "find stored path %s", tt.path)
-			assert.Equal(t, tt.wantSource != "", ok, "find stored path %s", tt.path)
+			assert.Equal(t, tt.wantFound != "", ok, "find stored path %s", tt.path)
 			if ok {
-				assert.Equal(t, tt.wantSource, found.DisplayPath, "source for stored path %s", tt.path)
+				assert.Equal(t, tt.wantFound, found.DisplayPath, "source for stored path %s", tt.path)
 			}
 		})
 	}
 }
 
-func TestKiroProviderFingerprintCoversSubExecutions(t *testing.T) {
+// A subagent source covers its own transcript and the session.json it takes
+// its project from. A session source is unaffected by its subagents.
+func TestKiroProviderSubagentFingerprint(t *testing.T) {
 	root := t.TempDir()
-	transcriptLine := testjsonl.KiroUserJSON("", "parent prompt")
-	transcript := writeKiroTestSession(t, root, transcriptLine)
-	sidecarInfo, err := os.Stat(filepath.Join(filepath.Dir(transcript), "session.json"))
-	require.NoError(t, err)
+	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+	sidecar := filepath.Join(filepath.Dir(transcript), "session.json")
+	childText := testjsonl.JoinJSONL(testjsonl.KiroAssistantJSON("", "child v1"))
+	childPath := kiroTestSubExecutionPath(transcript, kiroTestChildA)
+	writeSourceFile(t, childPath, childText)
 	provider := newKiroTestProvider(t, root)
-	source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: kiroTestParentRawID})
-	require.NoError(t, err)
-	require.True(t, found, "session %s should be found", kiroTestParentRawID)
-	fingerprint := func() SourceFingerprint {
+	fingerprint := func(rawID string) SourceFingerprint {
 		t.Helper()
+		source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: rawID})
+		require.NoError(t, err)
+		require.True(t, found, "session %s should be found", rawID)
 		fp, err := provider.Fingerprint(t.Context(), source)
 		require.NoError(t, err, "fingerprint %s", source.DisplayPath)
 		return fp
 	}
 
-	base := fingerprint()
-	assert.Equal(t, "998c34daf40686d851baf8ce51dc4b2df6fbc0c0660d3369e2ab4895fdc1ca98", base.Hash,
-		"recorded before subagent transcripts were supported: if a session without them changes "+
-			"hash, every archived Kiro session reparses")
-	assert.Equal(t, int64(len(transcriptLine)+1)+sidecarInfo.Size(), base.Size)
-
-	writeSourceFile(t, filepath.Join(filepath.Dir(transcript), "sub-executions", "bad.id.jsonl"), "{}\n")
-	assert.Equal(t, base, fingerprint(), "files that are not subagent transcripts are ignored")
-
-	childText := testjsonl.JoinJSONL(testjsonl.KiroAssistantJSON("", "child v1"))
-	childPath := kiroTestSubExecutionPath(transcript, kiroTestChildA)
-	writeSourceFile(t, childPath, childText)
-	withChild := fingerprint()
-	assert.NotEqual(t, base.Hash, withChild.Hash, "a new subagent transcript changes the hash")
-	assert.Equal(t, base.Size+int64(len(childText)), withChild.Size)
+	session := fingerprint(kiroTestParentRawID)
+	assert.Equal(t, "998c34daf40686d851baf8ce51dc4b2df6fbc0c0660d3369e2ab4895fdc1ca98", session.Hash,
+		"a session's hash does not depend on its subagent transcripts")
+	base := fingerprint(kiroTestChildA)
+	sidecarInfo, err := os.Stat(sidecar)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(childText))+sidecarInfo.Size(), base.Size)
 
 	// Same size and an older mtime: only the content hash can notice.
 	require.NoError(t, os.WriteFile(childPath, []byte(strings.Replace(childText, "v1", "v2", 1)), 0o644))
 	older := time.Unix(0, base.MTimeNS).Add(-time.Hour)
 	require.NoError(t, os.Chtimes(childPath, older, older))
-	rewritten := fingerprint()
-	assert.NotEqual(t, withChild.Hash, rewritten.Hash, "a rewritten subagent transcript changes the hash")
-	assert.Equal(t, withChild.Size, rewritten.Size)
+	rewritten := fingerprint(kiroTestChildA)
+	assert.NotEqual(t, base.Hash, rewritten.Hash, "a rewritten subagent transcript changes the hash")
+	assert.Equal(t, base.Size, rewritten.Size)
 
-	newer := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
-	require.NoError(t, os.Chtimes(childPath, newer, newer))
-	assert.Equal(t, newer.UnixNano(), fingerprint().MTimeNS,
-		"a subagent transcript newer than the session sets the source mtime")
-
-	require.NoError(t, os.Remove(childPath))
-	removed := fingerprint()
-	assert.Equal(t, base.Hash, removed.Hash, "removing the only subagent transcript restores the session hash")
-	assert.Equal(t, base.Size, removed.Size, "removing the only subagent transcript restores the session size")
+	writeSourceFile(t, sidecar, `{"workspacePaths":["/home/user/code/other-app"]}`)
+	assert.NotEqual(t, rewritten.Hash, fingerprint(kiroTestChildA).Hash,
+		"a subagent takes its project from session.json, so a sidecar change refreshes it")
 }
 
-func TestKiroProviderFindSourceResolvesSubagentToItsSession(t *testing.T) {
-	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
-	childPath := writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child"))
-	provider := newKiroTestProvider(t, root)
-
-	tests := []struct {
-		name string
-		req  FindSourceRequest
-		want bool
-	}{
-		{name: "raw subagent session ID", req: FindSourceRequest{RawSessionID: kiroTestChildA}, want: true},
-		{name: "full subagent session ID", req: FindSourceRequest{FullSessionID: "kiro:" + kiroTestChildA}, want: true},
-		{name: "stored subagent file path", req: FindSourceRequest{StoredFilePath: childPath}, want: true},
-		{name: "unknown subagent session ID", req: FindSourceRequest{RawSessionID: kiroTestChildB}, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			found, ok, err := provider.FindSource(t.Context(), tt.req)
-			require.NoError(t, err, "find %+v", tt.req)
-			require.Equal(t, tt.want, ok, "find %+v", tt.req)
-			if tt.want {
-				assert.Equal(t, transcript, found.DisplayPath,
-					"a subagent resolves to the session source that parses it")
-			}
-		})
-	}
-}
-
-// A subagent probe that fails for a reason other than absence, such as a
-// symlink loop, must surface instead of reading as "no such subagent".
-func TestKiroProviderFindSourceReportsSubagentProbeErrors(t *testing.T) {
-	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
-	loop := kiroTestSubExecutionPath(transcript, kiroTestChildA)
-	require.NoError(t, os.MkdirAll(filepath.Dir(loop), 0o755))
-	if err := os.Symlink(loop, loop); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
-	}
-	provider := newKiroTestProvider(t, root)
-
-	_, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: kiroTestChildA})
-
-	var pathErr *os.PathError
-	require.ErrorAs(t, err, &pathErr, "finding %s through the looping %s should fail", kiroTestChildA, loop)
-	assert.Equal(t, loop, pathErr.Path, "the error names the probed subagent transcript")
-	assert.False(t, found)
-}
-
-// Fingerprinting and parsing a session read every subagent transcript, so a
-// cancellation that arrives after either has started must stop that work.
-func TestKiroProviderSubExecutionWorkStopsWhenCancelled(t *testing.T) {
-	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
-	writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child A working"))
-	writeKiroTestSubExecution(t, transcript, kiroTestChildB, testjsonl.KiroAssistantJSON("", "child B working"))
-	provider := newKiroTestProvider(t, root)
-	sources, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, sources, 1, "a session and its subagents are one source")
-
-	t.Run("parse", func(t *testing.T) {
-		// The first cancellation check passes; the context is cancelled by
-		// the second.
-		_, err := provider.Parse(newCancelOnErrCheckContext(t, 2), ParseRequest{Source: sources[0]})
-		require.ErrorIs(t, err, context.Canceled, "parse %s", sources[0].DisplayPath)
-	})
-	t.Run("fingerprint", func(t *testing.T) {
-		_, err := provider.Fingerprint(newCancelOnErrCheckContext(t, 2), sources[0])
-		require.ErrorIs(t, err, context.Canceled, "fingerprint %s", sources[0].DisplayPath)
-	})
-}
-
-// A subagent transcript that cannot be read fails only that subagent. Its
-// error is keyed under the session transcript, the source being parsed,
-// because the engine discards a whole outcome whose diagnostic names another
-// source.
-func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
-	root := t.TempDir()
-	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
-	writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child A working"))
-	unreadable := writeKiroTestSubExecution(t, transcript, kiroTestChildB, testjsonl.KiroAssistantJSON("", "child B working"))
-	require.NoError(t, os.Chmod(unreadable, 0))
-	t.Cleanup(func() { assert.NoError(t, os.Chmod(unreadable, 0o644)) })
-	if _, err := os.ReadFile(unreadable); err == nil {
-		t.Skip("file permissions do not block reads for this user")
-	}
-	provider := newKiroTestProvider(t, root)
-	sources, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, sources, 1, "a session and its subagents are one source")
-
-	fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
-	require.NoError(t, err, "fingerprint %s", sources[0].DisplayPath)
-	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
-	require.NoError(t, err, "parse %s", sources[0].DisplayPath)
-
-	var ids []string
-	for _, result := range outcome.Results {
-		ids = append(ids, result.Result.Session.ID)
-	}
-	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA}, ids,
-		"the session and its readable subagent still parse")
-	require.Len(t, outcome.SourceErrors, 1)
-	got := outcome.SourceErrors[0]
-	assert.Equal(t, transcript+"#"+kiroTestChildB, got.SourceKey)
-	assert.Equal(t, unreadable, got.DisplayPath)
-	assert.Equal(t, "kiro:"+kiroTestChildB, got.SessionID)
-	assert.True(t, got.Retryable, "a read failure is retried on the next sync")
-	assert.ErrorIs(t, got.Err, os.ErrPermission)
-}
-
-// Memory admission charges a parse for every file it reads. Only sizes
-// matter here, so each file is filler of the listed size; metadata files hold
-// a padded title because discovery decodes them.
-func TestKiroProviderParseSourceSizeCoversEveryParsedFile(t *testing.T) {
-	session := filepath.Join("workspace", kiroTestParentRawID)
-	subExecutions := filepath.Join(session, "sub-executions")
-	tests := []struct {
-		name  string
-		files map[string]int
-		want  int64
-	}{
-		{
-			name: "session with subagent transcripts",
-			files: map[string]int{
-				filepath.Join(session, "messages.jsonl"):                       1000,
-				filepath.Join(session, "session.json"):                         200,
-				filepath.Join(subExecutions, kiroTestChildA+".jsonl"):          30,
-				filepath.Join(subExecutions, kiroTestChildB+".jsonl"):          4,
-				filepath.Join(subExecutions, "bad.id.jsonl"):                   50000,
-				filepath.Join(subExecutions, kiroTestChildC+".txt"):            50000,
-				filepath.Join(subExecutions, kiroTestSessionShapedID+".jsonl"): 50000,
-			},
-			want: 1234,
-		},
-		{
-			name: "session without subagent transcripts",
-			files: map[string]int{
-				filepath.Join(session, "messages.jsonl"): 1000,
-				filepath.Join(session, "session.json"):   200,
-			},
-			want: 1200,
-		},
-		{
-			name: "legacy transcript and its metadata",
-			files: map[string]int{
-				"legacy-session.jsonl": 1000,
-				"legacy-session.json":  200,
-			},
-			want: 1200,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			for name, size := range tt.files {
-				content := strings.Repeat("x", size)
-				if filepath.Ext(name) == ".json" {
-					content = `{"title":"` + strings.Repeat("x", size-len(`{"title":""}`)) + `"}`
-				}
-				writeSourceFile(t, filepath.Join(root, name), content)
-			}
-			provider := newKiroTestProvider(t, root)
-			sources, err := provider.Discover(t.Context())
-			require.NoError(t, err)
-			require.Len(t, sources, 1)
-			require.Implements(t, (*ParseSourceSizer)(nil), provider)
-
-			size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), sources[0])
-
-			require.NoError(t, err, "size %s", sources[0].DisplayPath)
-			assert.Equal(t, tt.want, size)
-		})
-	}
-}
-
-// A Kiro SQLite source is charged the whole database file.
-func TestKiroProviderParseSourceSizeChargesTheWholeSQLiteStore(t *testing.T) {
-	root := t.TempDir()
-	dbPath, db := newKiroProviderSQLiteDBAt(t, root)
-	seedKiroSQLiteSession(t, db, "/home/user/code/kiro-app", "sqlite-session",
-		readKiroFixture(t, "standard_payload.json"), 1779012000000, 1779012030000)
-	info, err := os.Stat(dbPath)
-	require.NoError(t, err)
-	require.Positive(t, info.Size())
-	provider := newKiroTestProvider(t, root)
-	physical, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, physical, 1)
-	member, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: "sqlite-session"})
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Implements(t, (*ParseSourceSizer)(nil), provider)
-
-	for _, source := range []SourceRef{physical[0], member} {
-		size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), source)
-		require.NoError(t, err, "size %s", source.DisplayPath)
-		assert.Equal(t, info.Size(), size, "size %s", source.DisplayPath)
-	}
-}
-
-// FindSource probes every session's sub-executions directory for IDs shaped
-// like a subagent, which includes legacy session names. One session whose
-// directory cannot be probed must not hide a source found elsewhere.
-func TestKiroProviderFindSourceIgnoresOtherSessionsProbeFailures(t *testing.T) {
+func TestKiroProviderFindSourceResolvesSubagentID(t *testing.T) {
 	tests := []struct {
 		name     string
 		breakDir func(t *testing.T, dir string)
 	}{
+		{name: "other sessions are intact", breakDir: func(*testing.T, string) {}},
 		{
-			name: "sub-executions is a file",
+			name: "another session's sub-executions is a file",
 			breakDir: func(t *testing.T, dir string) {
 				t.Helper()
 				writeSourceFile(t, dir, "not a directory")
 			},
 		},
 		{
-			name: "sub-executions is unreadable",
+			name: "another session's sub-executions is unreadable",
 			breakDir: func(t *testing.T, dir string) {
 				t.Helper()
 				require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -769,7 +463,7 @@ func TestKiroProviderFindSourceIgnoresOtherSessionsProbeFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
-			writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child"))
+			childPath := writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child"))
 			legacy := filepath.Join(root, "legacy-session.jsonl")
 			writeSourceFile(t, legacy, kiroProviderJSONLFixture("Legacy question"))
 			other := filepath.Join(root, "workspace", "sess_00000000000000ff")
@@ -778,14 +472,22 @@ func TestKiroProviderFindSourceIgnoresOtherSessionsProbeFailures(t *testing.T) {
 			tt.breakDir(t, filepath.Join(other, "sub-executions"))
 			provider := newKiroTestProvider(t, root)
 
-			for _, want := range []struct{ rawID, path string }{
-				{rawID: kiroTestChildA, path: transcript},
-				{rawID: "legacy-session", path: legacy},
+			for _, want := range []struct {
+				req  FindSourceRequest
+				path string
+			}{
+				{req: FindSourceRequest{RawSessionID: kiroTestChildA}, path: childPath},
+				{req: FindSourceRequest{FullSessionID: "kiro:" + kiroTestChildA}, path: childPath},
+				{req: FindSourceRequest{RawSessionID: kiroTestParentRawID}, path: transcript},
+				{req: FindSourceRequest{RawSessionID: "legacy-session"}, path: legacy},
+				{req: FindSourceRequest{RawSessionID: kiroTestChildB}},
 			} {
-				found, ok, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: want.rawID})
-				require.NoError(t, err, "find %s", want.rawID)
-				require.True(t, ok, "find %s", want.rawID)
-				assert.Equal(t, want.path, found.DisplayPath, "find %s", want.rawID)
+				found, ok, err := provider.FindSource(t.Context(), want.req)
+				require.NoError(t, err, "find %+v", want.req)
+				require.Equal(t, want.path != "", ok, "find %+v", want.req)
+				if ok {
+					assert.Equal(t, want.path, found.DisplayPath, "find %+v", want.req)
+				}
 			}
 		})
 	}

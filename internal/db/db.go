@@ -612,7 +612,10 @@ CREATE INDEX IF NOT EXISTS idx_provider_freshness_updated_at
 // (150: keep token usage on Claude assistant records that render no text, such
 // as blank thinking. Re-parse Claude-format sources in place; source and
 // session identities are unchanged.)
-const dataVersion = 150
+// (151: record kiro-cli subagent spawns as Task calls linked to the subagent
+// sessions. Re-parse Kiro sources in place; source and session identities are
+// unchanged.)
+const dataVersion = 151
 
 const archiveOnlyVersionBase = 1 << 20
 

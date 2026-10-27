@@ -102,8 +102,8 @@ The latest release is
   started them, including subagents started by other subagents. The parent
   transcript shows each delegation with its prompt and result, and links to the
   subagent's session. A failed delegation counts as a tool failure in the
-  session's health signals. Existing archives pick up past subagent runs on the
-  next sync.
+  session's health signals. Existing Kiro sessions are reprocessed on upgrade
+  to pick up past subagent runs.
 - A forked Codex session now appears as a fork of the session it came from, the
   way forks from other agents already do. Before, it showed up as an unrelated
   top-level session. Existing Codex, TraeX, and Augure Code sessions are

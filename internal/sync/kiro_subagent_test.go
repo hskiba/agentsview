@@ -13,6 +13,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
@@ -276,77 +277,6 @@ func TestKiroSubagentTranscriptsSyncAsChildSessions(t *testing.T) {
 	)
 }
 
-// A session and its subagents are written as one source. When a refresh
-// writes the session but fails to write a subagent, the session must stay
-// stale so the next ordinary sync retries the subagent instead of skipping
-// the unchanged source.
-func TestKiroSubagentWriteFailureRetriesWholeSession(t *testing.T) {
-	tests := []struct {
-		name    string
-		refresh func(t *testing.T, env *testEnv)
-	}{
-		{
-			name: "single-session refresh",
-			refresh: func(t *testing.T, env *testEnv) {
-				t.Helper()
-				require.Error(t, env.engine.SyncSingleSession(kiroSubagentParentID))
-			},
-		},
-		{
-			name: "full sync",
-			refresh: func(t *testing.T, env *testEnv) {
-				t.Helper()
-				stats := env.engine.SyncAll(t.Context(), nil)
-				require.False(t, stats.Aborted)
-				require.Equal(t, 1, stats.Failed)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			env := setupSingleAgentTestEnv(t, parser.AgentKiro)
-			sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
-			stats := env.engine.SyncAll(t.Context(), nil)
-			require.False(t, stats.Aborted)
-			require.Zero(t, stats.Failed)
-
-			spawnKiroLaterSubagent(t, sessDir)
-			raw, err := sql.Open("sqlite3", env.db.Path())
-			require.NoError(t, err)
-			t.Cleanup(func() { assert.NoError(t, raw.Close()) })
-			_, err = raw.ExecContext(t.Context(), `
-				CREATE TRIGGER fail_kiro_subagent_insert
-				BEFORE INSERT ON sessions
-				WHEN NEW.id = '`+kiroSubagentLaterID+`'
-				BEGIN
-					SELECT RAISE(FAIL, 'injected Kiro subagent write failure');
-				END;
-			`)
-			require.NoError(t, err)
-
-			tt.refresh(t, env)
-			later, err := env.db.GetSessionFull(t.Context(), kiroSubagentLaterID)
-			require.NoError(t, err)
-			require.Nil(t, later, "the injected failure must leave the new subagent unwritten")
-
-			_, err = raw.ExecContext(t.Context(), `DROP TRIGGER fail_kiro_subagent_insert`)
-			require.NoError(t, err)
-			retry := env.engine.SyncAll(t.Context(), nil)
-			require.False(t, retry.Aborted)
-			assert.Zero(t, retry.Failed)
-
-			later, err = env.db.GetSessionFull(t.Context(), kiroSubagentLaterID)
-			require.NoError(t, err)
-			assert.NotNil(t, later, "the next sync must retry the subagent the refresh failed to write")
-			parent, err := env.db.GetSessionFull(t.Context(), kiroSubagentParentID)
-			require.NoError(t, err)
-			require.NotNil(t, parent)
-			assert.Equal(t, db.CurrentDataVersion(), parent.DataVersion,
-				"the session is current once every subagent is written")
-		})
-	}
-}
-
 // kiroSessionText joins the content of a session's stored messages.
 func kiroSessionText(t *testing.T, database *db.DB, sessionID string) string {
 	t.Helper()
@@ -359,9 +289,10 @@ func kiroSessionText(t *testing.T, database *db.DB, sessionID string) string {
 	return strings.Join(text, "\n")
 }
 
-// An unreadable subagent transcript must not hold back its session or the
-// other subagents; the session stays stale until it can be read.
-func TestKiroUnreadableSubagentLeavesSessionAndSiblingsSyncing(t *testing.T) {
+// Each subagent transcript is its own source, so an unreadable one fails
+// alone: its session and the other subagents keep syncing, and it syncs once
+// it can be read.
+func TestKiroUnreadableSubagentFailsOnlyItsOwnSource(t *testing.T) {
 	breaks := []struct {
 		name       string
 		breakChild func(t *testing.T, path string) (restore func())
@@ -395,83 +326,73 @@ func TestKiroUnreadableSubagentLeavesSessionAndSiblingsSyncing(t *testing.T) {
 			},
 		},
 	}
-	refreshes := []struct {
-		name    string
-		refresh func(t *testing.T, env *testEnv, changed string)
-	}{
-		{
-			name: "full sync",
-			refresh: func(t *testing.T, env *testEnv, _ string) {
-				t.Helper()
-				stats := env.engine.SyncAll(t.Context(), nil)
-				require.False(t, stats.Aborted)
-				assert.Equal(t, 1, stats.Failed, "the unreadable subagent is reported")
-			},
-		},
-		{
-			name: "changed path",
-			refresh: func(t *testing.T, env *testEnv, changed string) {
-				t.Helper()
-				assert.Error(t, env.engine.SyncPathsContext(t.Context(), []string{changed}),
-					"the unreadable subagent leaves the refresh incomplete")
-			},
-		},
-		{
-			name: "single-session refresh",
-			refresh: func(t *testing.T, env *testEnv, _ string) {
-				t.Helper()
-				assert.NoError(t, env.engine.SyncSingleSession(kiroSubagentParentID),
-					"the requested session refreshes")
-			},
-		},
-	}
 	for _, br := range breaks {
-		for _, rf := range refreshes {
-			t.Run(br.name+"/"+rf.name, func(t *testing.T) {
-				env := setupSingleAgentTestEnv(t, parser.AgentKiro)
-				sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
-				laterChild := spawnKiroLaterSubagent(t, sessDir)
-				stats := env.engine.SyncAll(t.Context(), nil)
-				require.False(t, stats.Aborted)
-				require.Zero(t, stats.Failed)
+		t.Run(br.name, func(t *testing.T) {
+			env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+			sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
+			laterChild := spawnKiroLaterSubagent(t, sessDir)
+			stats := env.engine.SyncAll(t.Context(), nil)
+			require.False(t, stats.Aborted)
+			require.Zero(t, stats.Failed)
 
-				appendKiroLine(t, filepath.Join(sessDir, "messages.jsonl"),
-					testjsonl.KiroAssistantJSON("2026-06-01T10:02:00Z", "PARENT_UPDATE"))
-				sibling := filepath.Join(sessDir, "sub-executions", kiroSubagentChildRawID+".jsonl")
-				appendKiroLine(t, sibling,
-					testjsonl.KiroAssistantJSON("2026-06-01T10:02:01Z", "SIBLING_UPDATE"))
-				restore := br.breakChild(t, laterChild)
+			appendKiroLine(t, filepath.Join(sessDir, "messages.jsonl"),
+				testjsonl.KiroAssistantJSON("2026-06-01T10:02:00Z", "PARENT_UPDATE"))
+			sibling := filepath.Join(sessDir, "sub-executions", kiroSubagentChildRawID+".jsonl")
+			appendKiroLine(t, sibling,
+				testjsonl.KiroAssistantJSON("2026-06-01T10:02:01Z", "SIBLING_UPDATE"))
+			restore := br.breakChild(t, laterChild)
 
-				rf.refresh(t, env, sibling)
-				assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentParentID), "PARENT_UPDATE",
-					"the session syncs past its unreadable subagent")
-				assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentChildID), "SIBLING_UPDATE",
-					"a readable subagent syncs past its unreadable sibling")
-				later, err := env.db.GetSessionFull(t.Context(), kiroSubagentLaterID)
-				require.NoError(t, err)
-				require.NotNil(t, later, "the unreadable subagent stays archived")
-				assert.Nil(t, later.SourceMissingAt, "an unreadable subagent transcript is not missing")
-				parent, err := env.db.GetSessionFull(t.Context(), kiroSubagentParentID)
-				require.NoError(t, err)
-				require.NotNil(t, parent)
-				assert.Less(t, parent.DataVersion, db.CurrentDataVersion(),
-					"the session stays stale so the next sync retries the unreadable subagent")
+			stats = env.engine.SyncAll(t.Context(), nil)
+			require.False(t, stats.Aborted)
+			assert.Equal(t, 1, stats.Failed, "only the unreadable subagent fails")
+			assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentParentID), "PARENT_UPDATE",
+				"the session syncs past its unreadable subagent")
+			assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentChildID), "SIBLING_UPDATE",
+				"a readable subagent syncs past its unreadable sibling")
+			later, err := env.db.GetSessionFull(t.Context(), kiroSubagentLaterID)
+			require.NoError(t, err)
+			require.NotNil(t, later, "the unreadable subagent stays archived")
+			assert.Nil(t, later.SourceMissingAt, "an unreadable subagent transcript is not missing")
 
-				restore()
-				appendKiroLine(t, laterChild,
-					testjsonl.KiroAssistantJSON("2026-06-01T10:02:02Z", "LATER_UPDATE"))
-				retry := env.engine.SyncAll(t.Context(), nil)
-				require.False(t, retry.Aborted)
-				assert.Zero(t, retry.Failed)
-				assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentLaterID), "LATER_UPDATE",
-					"the subagent syncs once it can be read")
-				parent, err = env.db.GetSessionFull(t.Context(), kiroSubagentParentID)
-				require.NoError(t, err)
-				require.NotNil(t, parent)
-				assert.Equal(t, db.CurrentDataVersion(), parent.DataVersion,
-					"the session is current once every subagent is written")
-			})
-		}
+			restore()
+			appendKiroLine(t, laterChild,
+				testjsonl.KiroAssistantJSON("2026-06-01T10:02:02Z", "LATER_UPDATE"))
+			retry := env.engine.SyncAll(t.Context(), nil)
+			require.False(t, retry.Aborted)
+			assert.Zero(t, retry.Failed)
+			assert.Contains(t, kiroSessionText(t, env.db, kiroSubagentLaterID), "LATER_UPDATE",
+				"the subagent syncs once it can be read")
+		})
+	}
+}
+
+// kiro-cli writes every subagent transcript flat in the session's
+// sub-executions directory, so the parser links each subagent to the
+// session. The subagent linker then moves a nested subagent onto the
+// subagent whose Task call spawned it.
+func TestKiroNestedSubagentLinksToItsSpawner(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+	sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
+	appendKiroLine(t, filepath.Join(sessDir, "sub-executions", kiroSubagentChildRawID+".jsonl"),
+		testjsonl.KiroSubAgentStartJSON("invoke_subagent_toolu_test03-sub-agent-start", "2026-06-01T10:00:05Z",
+			kiroSubagentLaterRawID, "reviewer", "review it"))
+	writeKiroLines(t, filepath.Join(sessDir, "sub-executions", kiroSubagentLaterRawID+".jsonl"),
+		testjsonl.KiroAssistantJSON("2026-06-01T10:00:06Z", "reviewing"))
+
+	stats := env.engine.SyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted)
+	require.Zero(t, stats.Failed)
+
+	for id, wantParent := range map[string]string{
+		kiroSubagentChildID: kiroSubagentParentID,
+		kiroSubagentLaterID: kiroSubagentChildID,
+	} {
+		session, err := env.db.GetSessionFull(t.Context(), id)
+		require.NoError(t, err)
+		require.NotNil(t, session, "subagent %s must sync", id)
+		require.NotNil(t, session.ParentSessionID, "subagent %s must have a parent", id)
+		assert.Equal(t, wantParent, *session.ParentSessionID, "parent of %s", id)
+		assert.Equal(t, "subagent", session.RelationshipType, "relationship of %s", id)
 	}
 }
 
@@ -508,35 +429,51 @@ func TestKiroSubagentDelegationStatusFeedsToolHealth(t *testing.T) {
 	assert.Equal(t, 1, parent.ToolFailureSignalCount, "only the failed delegation is a tool failure")
 }
 
-// Only a session transcript's rows are completed together. A Kiro SQLite
-// store holds independent sessions, so a failed write leaves the others
-// current.
-func TestKiroSQLiteWriteFailureLeavesOtherSessionsCurrent(t *testing.T) {
-	env := setupSingleAgentTestEnv(t, parser.AgentKiro)
-	ks := createKiroSQLiteDB(t, env.kiroDir)
-	payload := readKiroSQLiteFixture(t, "standard_payload.json")
-	for _, id := range []string{"healthy-session", "failing-session"} {
-		ks.addSession(t, "/home/user/code/kiro-app", id, payload, 1779012000000, 1779012030000)
-	}
-	raw, err := sql.Open("sqlite3", env.db.Path())
+// Data version 151 reparses Kiro sources in place, so a session archived
+// before spawns were parsed gains its Task calls without changing identity.
+func TestKiroSubagentUpgradeRecordsSpawnsInPlace(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	writeKiroSessionWithSubagent(t, root)
+	archivePath := filepath.Join(t.TempDir(), "archive.db")
+	database, err := db.OpenIsolated(ctx, archivePath)
 	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, raw.Close()) })
-	_, err = raw.ExecContext(t.Context(), `
-		CREATE TRIGGER fail_kiro_sqlite_insert
-		BEFORE INSERT ON sessions
-		WHEN NEW.id = 'kiro:failing-session'
-		BEGIN
-			SELECT RAISE(FAIL, 'injected Kiro SQLite write failure');
-		END;
-	`)
-	require.NoError(t, err)
+	cfg := sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentKiro: {root}}, Machine: "local"}
+	engine := sync.NewEngine(ctx, database, cfg)
+	require.Zero(t, engine.SyncAll(ctx, nil).Failed)
+	require.NotEmpty(t, kiroSpawnLinks(t, database, kiroSubagentParentID))
+	engine.Close()
+	require.NoError(t, database.Close())
 
-	stats := env.engine.SyncAll(t.Context(), nil)
-	require.False(t, stats.Aborted)
-	require.Equal(t, 1, stats.Failed)
-
-	healthy, err := env.db.GetSessionFull(t.Context(), "kiro:healthy-session")
+	// Model version 150, which dropped spawn records, without changing the
+	// source fingerprint.
+	previousVersion := 150
+	raw, err := sql.Open("sqlite3", archivePath)
 	require.NoError(t, err)
-	require.NotNil(t, healthy)
-	assert.Equal(t, db.CurrentDataVersion(), healthy.DataVersion)
+	_, err = raw.ExecContext(ctx, fmt.Sprintf(`
+		DELETE FROM tool_calls WHERE session_id = '%[2]s';
+		UPDATE sessions SET data_version = %[1]d; PRAGMA user_version = %[1]d`,
+		previousVersion, kiroSubagentParentID))
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	reopened, err := db.OpenIsolated(ctx, archivePath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reopened.Close()) }()
+	assert.False(t, reopened.NeedsResync(), "the archive upgrades in place")
+	require.Empty(t, kiroSpawnLinks(t, reopened, kiroSubagentParentID))
+	upgraded := sync.NewEngine(ctx, reopened, cfg)
+	defer upgraded.Close()
+	stats := upgraded.SyncAll(ctx, nil)
+	require.Zero(t, stats.Failed)
+	assert.Positive(t, stats.Synced)
+
+	assert.Equal(t,
+		map[string]string{"invoke_subagent:" + kiroSubagentChildRawID: kiroSubagentChildID},
+		kiroSpawnLinks(t, reopened, kiroSubagentParentID),
+		"the reparse restores the spawn as a Task call linked to the subagent")
+	parent, err := reopened.GetSessionFull(ctx, kiroSubagentParentID)
+	require.NoError(t, err)
+	require.NotNil(t, parent)
+	assert.Equal(t, db.CurrentDataVersion(), parent.DataVersion)
 }

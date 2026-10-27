@@ -2915,37 +2915,38 @@ schemas keep their existing ordering behavior.
   `timestamp`, `cwd`, and optional `parentSession`, then entries with `id`,
   `parentId`, and `timestamp`. `appendMessage` stores
   `message: {role, content}`, with optional assistant `usage`, `model`, and
-  `effort` at the entry root. Blocks include `text`, `thinking`, `tool_use`, and
-  `tool_result`. `latestSessionInfoName` takes the last `session_info` name,
-  falling back to the sidecar title when that name is empty. `model_change`
-  applies to later turns; effort comes only from a turn's inline value because
-  `recordEffortChange` stores effort per model. The sidecar model is not
-  consumed; it describes the latest selection, and `migrateToV3` copies it only
-  to the last assistant turn. `migrateToV3` and `migrationWriteBack` rewrite v2
-  in place, merging a tool turn with the following user turn. Agentsview shows
-  abandoned branches of a rewound conversation in file order.
+  `effort` at the entry root. Blocks include `text`, `thinking`, `tool_use`,
+  and `tool_result`. `latestSessionInfoName` takes the last `session_info`
+  name, falling back to the sidecar title when that name is empty.
+  `model_change` applies to later turns; effort comes only from a turn's
+  inline value because `recordEffortChange` stores effort per model. The
+  sidecar model is not consumed; it describes the latest selection, and
+  `migrateToV3` copies it only to the last assistant turn. `migrateToV3` and
+  `migrationWriteBack` rewrite v2 in place, merging a tool turn with the
+  following user turn. Agentsview shows abandoned branches of a rewound
+  conversation in file order.
 - **Usage and cost:** `toSessionUsage` writes `inputTokens`, `outputTokens`,
-  `cacheReadTokens`, and `cacheWriteTokens`, with optional `cacheWriteTokens1h`
-  and `costUsd`. Finish handlers take input from `totalUsage.inputTokens` and
-  cache counts from `inputTokenDetails`. In
+  `cacheReadTokens`, and `cacheWriteTokens`, with optional
+  `cacheWriteTokens1h` and `costUsd`. Finish handlers take input from
+  `totalUsage.inputTokens` and cache counts from `inputTokenDetails`. In
   [ai 6.0.116](https://registry.npmjs.org/ai/-/ai-6.0.116.tgz),
   `src/types/usage.ts` defines input as the total; in
   [@ai-sdk/anthropic 3.0.77](https://registry.npmjs.org/@ai-sdk/anthropic/-/anthropic-3.0.77.tgz),
   `src/convert-anthropic-messages-usage.ts` adds uncached, cache-read, and
   cache-write input. Agentsview uses
-  `max(inputTokens - cacheReadTokens - cacheWriteTokens, 0)` for uncached input.
-  `estimateCatalogCostUsd` treats `cacheWriteTokens` as the total and clamps the
-  one-hour subset to that total; the remaining writes use the five-minute rate.
-  Agentsview preserves the total and one-hour subset for model pricing.
-  `costUsd` is not consumed. All four fork paths write `parentSessionId` and
-  `forkedAt` in the sidecar. `cloneSessionFile`, `createBranchedSession`, and
-  `forkFromV3` copy earlier turns with their original usage and timestamps under
-  a new header timestamped at fork time. The CLI's `forkSession` copies the old
-  header too, adding `sessionId` to each line; it keeps the parent's header
-  timestamp and does not add a header `parentSession`. Agentsview links through
-  the sidecar parent, falling back to the header parent path. For a fork, it
-  omits usage at or before the later of the header timestamp and sidecar
-  `forkedAt`.
+  `max(inputTokens - cacheReadTokens - cacheWriteTokens, 0)` for uncached
+  input. `estimateCatalogCostUsd` treats `cacheWriteTokens` as the total and
+  clamps the one-hour subset to that total; the remaining writes use the
+  five-minute rate. Agentsview preserves the total and one-hour subset for
+  model pricing. `costUsd` is not consumed. All four fork paths write
+  `parentSessionId` and `forkedAt` in the sidecar. `cloneSessionFile`,
+  `createBranchedSession`, and `forkFromV3` copy earlier turns with their
+  original usage and timestamps under a new header timestamped at fork time.
+  The CLI's `forkSession` copies the old header too, adding `sessionId` to
+  each line; it keeps the parent's header timestamp and does not add a header
+  `parentSession`. Agentsview links through the sidecar parent, falling back
+  to the header parent path. For a fork, it omits usage at or before the later
+  of the header timestamp and sidecar `forkedAt`.
 - **Agentsview:** `internal/parser/commandcode.go` and
   `internal/parser/commandcode_provider.go`.
 
@@ -3506,17 +3507,16 @@ schemas keep their existing ordering behavior.
     kiro-cli writes each subagent's transcript, including subagents spawned by
     other subagents, flat at `sess_<id>/sub-executions/<subSessionId>.jsonl` in
     the same envelope as `messages.jsonl`. The spawning transcript records a
-    `sub_agent_start` (`subSessionId`, `subAgentName`, `prompt`,
-    `explanation`) and a `sub_agent_complete` (`subSessionId`, `status`,
-    `response`, `errorMessage`); it writes no `tool_call` for the spawn, and
-    record `id` values can repeat, so `subSessionId` is the pairing key. This
-    layout was observed in local kiro-cli 2.34.1 output on 2026-10-27: every
-    `sub_agent_start` had a matching sub-executions file, `response` was
-    always a string, and failed spawns could also set `errorMessage`.
-    Rechecked against local kiro-cli 2.34.2 output the same day: every
-    `sub_agent_complete` `status` was `success` or `error`, and every ordinary
-    `tool_result` record carried a `success` boolean or null. There is no
-    producer schema.
+    `sub_agent_start` (`subSessionId`, `subAgentName`, `prompt`, `explanation`)
+    and a `sub_agent_complete` (`subSessionId`, `status`, `response`,
+    `errorMessage`); it writes no `tool_call` for the spawn, and record `id`
+    values can repeat, so `subSessionId` is the pairing key. This layout was
+    observed in local kiro-cli 2.34.1 output on 2026-10-27: every
+    `sub_agent_start` had a matching sub-executions file, `response` was always
+    a string, and failed spawns could also set `errorMessage`. Rechecked against
+    local kiro-cli 2.34.2 output the same day: every `sub_agent_complete`
+    `status` was `success` or `error`, and every ordinary `tool_result` record
+    carried a `success` boolean or null. There is no producer schema.
 
 - **Evidence:** `documentation`.
 
@@ -3558,30 +3558,24 @@ schemas keep their existing ordering behavior.
   Agentsview uses as the session name; the SQLite generation carries none. The
   first message falls back to the title only when there is no user message.
 
-    A current-layout session source parses its `messages.jsonl` together with
-    its sub-executions files; only regular `<id>.jsonl` files directly inside
-    `sub-executions` count. A `subSessionId` shaped like a session directory
-    (`sess_<id>`) is ignored in spawn records and file names, because
-    `kiro:sess_<id>` would collide with that session. Each spawn becomes an
-    `invoke_subagent` Task tool call and result; the result records `success`
+    Each sub-executions file is its own source; only regular `<id>.jsonl` files
+    directly inside `sub-executions` count. A `subSessionId` shaped like a
+    session directory (`sess_<id>`) is ignored in spawn records and file names,
+    because `kiro:sess_<id>` would collide with that session. Each spawn becomes
+    an `invoke_subagent` Task tool call and result; the result records `success`
     as `completed` and `error` as `errored`, so a failed delegation counts in
     tool health, and leaves any other value unknown. Ordinary `tool_result`
     records' `success` is not read. Each subagent becomes session
-    `kiro:<subSessionId>`, linked to the transcript whose `sub_agent_start`
-    names it (the top session when none does), named by its `subAgentName`,
-    and inheriting its project and working directory. The prompt stays on the
-    spawning transcript's Task call; the subagent's own transcript holds only
-    what kiro-cli wrote there. The session source owns those child rows, so a
-    removed subagent transcript marks its session source-missing. Sessions
-    without sub-executions files keep their previous fingerprint, and because
-    every observed spawn record has a sub-executions file, sessions with
-    spawns change fingerprint and are reparsed without a data-version bump.
-    Limits: a session whose SQLite duplicate outranks its current JSONL source
-    emits no subagents; a `subSessionId` copied into two sessions is stored
-    once, linked to whichever spawning session synced last; and while a nested
-    subagent's spawning transcript is missing or unreadable, the subagent is
-    unnamed and parsed under the top session, though its stored parent stays
-    on the spawner through the archived Task call.
+    `kiro:<subSessionId>`, parsed from its own transcript only, with the project
+    and working directory of its session's `session.json`. The parser links it
+    to the session whose directory holds it; the subagent linker then moves a
+    nested subagent onto the subagent whose Task call names it. Subagent
+    sessions carry no name, because `subAgentName` lives only in the spawning
+    transcript. Data version 151 reparses Kiro sources in place so archived
+    sessions gain their Task calls. Limit: a session whose SQLite duplicate
+    outranks its current JSONL source is parsed from SQLite, which is not read
+    for spawns, so it records no Task calls; its subagents still sync from their
+    own transcripts.
 
 ## Kiro IDE (`kiro-ide`)
 
