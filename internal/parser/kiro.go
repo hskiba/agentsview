@@ -626,7 +626,10 @@ func parseKiroSubExecutions(
 		id := "kiro:" + subID
 		transcript, err := readKiroCurrentTranscript(path)
 		if err != nil {
-			sourceErrs = append(sourceErrs, SourceError{SourceKey: path, DisplayPath: path, SessionID: id, Err: err, Retryable: true})
+			sourceErrs = append(sourceErrs, SourceError{
+				SourceKey: parent.File.Path + "#" + subID, DisplayPath: path,
+				SessionID: id, Err: err, Retryable: true,
+			})
 			continue
 		}
 		if len(transcript.Messages) == 0 {

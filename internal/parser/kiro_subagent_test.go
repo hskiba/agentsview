@@ -672,3 +672,40 @@ func TestKiroProviderSubExecutionWorkStopsWhenCancelled(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled, "fingerprint %s", sources[0].DisplayPath)
 	})
 }
+
+// A subagent transcript that cannot be read fails only that subagent. Its
+// error is keyed under the session transcript, the source being parsed,
+// because the engine discards a whole outcome whose diagnostic names another
+// source.
+func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
+	root := t.TempDir()
+	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+	writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child A working"))
+	unreadable := writeKiroTestSubExecution(t, transcript, kiroTestChildB, testjsonl.KiroAssistantJSON("", "child B working"))
+	require.NoError(t, os.Chmod(unreadable, 0))
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(unreadable, 0o644)) })
+	if _, err := os.ReadFile(unreadable); err == nil {
+		t.Skip("file permissions do not block reads for this user")
+	}
+	provider := newKiroTestProvider(t, root)
+	sources, err := provider.Discover(t.Context())
+	require.NoError(t, err)
+	require.Len(t, sources, 1, "a session and its subagents are one source")
+
+	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0]})
+	require.NoError(t, err, "parse %s", sources[0].DisplayPath)
+
+	var ids []string
+	for _, result := range outcome.Results {
+		ids = append(ids, result.Result.Session.ID)
+	}
+	assert.Equal(t, []string{"kiro:" + kiroTestParentRawID, "kiro:" + kiroTestChildA}, ids,
+		"the session and its readable subagent still parse")
+	require.Len(t, outcome.SourceErrors, 1)
+	got := outcome.SourceErrors[0]
+	assert.Equal(t, transcript+"#"+kiroTestChildB, got.SourceKey)
+	assert.Equal(t, unreadable, got.DisplayPath)
+	assert.Equal(t, "kiro:"+kiroTestChildB, got.SessionID)
+	assert.True(t, got.Retryable, "a read failure is retried on the next sync")
+	assert.ErrorIs(t, got.Err, os.ErrPermission)
+}
