@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -309,6 +308,7 @@ type kiroSubagentSpawn struct {
 	SubSessionID string
 	Name         string
 	Prompt       string
+	Timestamp    time.Time
 }
 
 // kiroSubagentInput is the Task tool input recorded for a subagent spawn,
@@ -431,7 +431,7 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, error) {
 			if !IsValidSessionID(subID) {
 				continue
 			}
-			spawn := kiroSubagentSpawn{SubSessionID: subID, Name: payload.Get("subAgentName").Str, Prompt: payload.Get("prompt").Str}
+			spawn := kiroSubagentSpawn{SubSessionID: subID, Name: payload.Get("subAgentName").Str, Prompt: payload.Get("prompt").Str, Timestamp: timestamp}
 			input, err := json.Marshal(kiroSubagentInput{SubagentType: spawn.Name, Description: payload.Get("explanation").Str, Prompt: spawn.Prompt})
 			if err != nil {
 				return kiroCurrentTranscript{}, fmt.Errorf("encode Kiro subagent input in %s: %w", path, err)
@@ -628,9 +628,11 @@ func parseCurrentSubExecutions(
 		if known && origin.parentID != "kiro:"+child.subID {
 			parentID = origin.parentID
 		}
-		firstMessage := cmp.Or(child.transcript.FirstMessage,
-			truncate(strings.ReplaceAll(strings.TrimSpace(origin.spawn.Prompt), "\n", " "), 300))
-		startedAt, endedAt := child.transcript.bounds()
+		transcript := child.transcript
+		if transcript.userMessageCount() == 0 {
+			transcript = transcript.withSpawnPrompt(origin.spawn)
+		}
+		startedAt, endedAt := transcript.bounds()
 		results = append(results, ParseResult{
 			Session: ParsedSession{
 				ID:               "kiro:" + child.subID,
@@ -638,20 +640,50 @@ func parseCurrentSubExecutions(
 				Machine:          parent.Machine,
 				Agent:            AgentKiro,
 				Cwd:              parent.Cwd,
-				FirstMessage:     firstMessage,
+				FirstMessage:     transcript.FirstMessage,
 				StartedAt:        startedAt,
 				EndedAt:          endedAt,
-				MessageCount:     len(child.transcript.Messages),
-				UserMessageCount: child.transcript.userMessageCount(),
+				MessageCount:     len(transcript.Messages),
+				UserMessageCount: transcript.userMessageCount(),
 				SessionName:      origin.spawn.Name,
 				ParentSessionID:  parentID,
 				RelationshipType: RelSubagent,
-				File:             FileInfo{Path: child.path, Size: child.transcript.Size, Mtime: child.transcript.ModTime.UnixNano()},
+				File:             FileInfo{Path: child.path, Size: transcript.Size, Mtime: transcript.ModTime.UnixNano()},
 			},
-			Messages: child.transcript.Messages,
+			Messages: transcript.Messages,
 		})
 	}
 	return results, sourceErrs, nil
+}
+
+// withSpawnPrompt starts a subagent transcript with the prompt its spawning
+// sub_agent_start delivered. kiro-cli records that prompt only in the
+// spawning transcript, so without it a subagent's transcript starts mid-task.
+// The copied turn is marked with the record type it came from.
+func (t kiroCurrentTranscript) withSpawnPrompt(spawn kiroSubagentSpawn) kiroCurrentTranscript {
+	prompt := strings.TrimSpace(spawn.Prompt)
+	if prompt == "" {
+		return t
+	}
+	messages := make([]ParsedMessage, 0, len(t.Messages)+1)
+	messages = append(messages, ParsedMessage{
+		Ordinal:       0,
+		Role:          RoleUser,
+		Content:       prompt,
+		Timestamp:     spawn.Timestamp,
+		ContentLength: len(prompt),
+		SourceType:    "sub_agent_start",
+	})
+	for _, msg := range t.Messages {
+		msg.Ordinal++
+		messages = append(messages, msg)
+	}
+	t.Messages = messages
+	t.FirstMessage = truncate(strings.ReplaceAll(prompt, "\n", " "), 300)
+	if !spawn.Timestamp.IsZero() && (t.EarliestMessage.IsZero() || spawn.Timestamp.Before(t.EarliestMessage)) {
+		t.EarliestMessage = spawn.Timestamp
+	}
+	return t
 }
 
 func kiroCurrentMessageTimestamp(value gjson.Result) time.Time {

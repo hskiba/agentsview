@@ -156,6 +156,57 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 		"a failed spawn reports its error message as the result")
 }
 
+// kiro-cli writes a subagent's prompt only into the spawning transcript, so
+// the subagent's own transcript would otherwise start mid-task.
+func TestKiroProviderStartsSubagentTranscriptWithItsPrompt(t *testing.T) {
+	root := t.TempDir()
+	transcript := writeKiroTestSession(t, root,
+		`{"timestamp":"2026-06-01T10:00:00Z","payload":{"type":"user","content":"parent prompt"}}`,
+		kiroTestSubAgentStart(kiroTestChildA, "coder", "do the subtask"),
+		kiroTestSubAgentStart(kiroTestChildB, "reviewer", "review the change"),
+	)
+	writeSourceFile(t, kiroTestSubExecutionPath(transcript, kiroTestChildA), kiroTestLines(
+		`{"timestamp":"2026-06-01T10:00:02Z","payload":{"type":"assistant","content":"child A working"}}`,
+	))
+	// A transcript that already records its prompt keeps it as written.
+	writeSourceFile(t, kiroTestSubExecutionPath(transcript, kiroTestChildB), kiroTestLines(
+		`{"timestamp":"2026-06-01T10:00:03Z","payload":{"type":"user","content":"review the change"}}`,
+		`{"timestamp":"2026-06-01T10:00:04Z","payload":{"type":"assistant","content":"child B working"}}`,
+	))
+	// No sub_agent_start names this subagent, so there is no prompt to add.
+	writeSourceFile(t, kiroTestSubExecutionPath(transcript, kiroTestOrphan), kiroTestLines(
+		`{"timestamp":"2026-06-01T10:00:05Z","payload":{"type":"assistant","content":"orphan working"}}`,
+	))
+
+	byID := parseKiroTestSessions(t, root)
+	type turn struct{ Role, Content string }
+	tests := []struct {
+		subID     string
+		turns     []turn
+		userCount int
+		startedAt string
+	}{
+		{kiroTestChildA, []turn{{"user", "do the subtask"}, {"assistant", "child A working"}}, 1, "2026-06-01T10:00:01Z"},
+		{kiroTestChildB, []turn{{"user", "review the change"}, {"assistant", "child B working"}}, 1, "2026-06-01T10:00:03Z"},
+		{kiroTestOrphan, []turn{{"assistant", "orphan working"}}, 0, "2026-06-01T10:00:05Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.subID, func(t *testing.T) {
+			child, ok := byID["kiro:"+tt.subID]
+			require.True(t, ok)
+			var turns []turn
+			for i, msg := range child.Messages {
+				assert.Equal(t, i, msg.Ordinal, "ordinals stay contiguous")
+				turns = append(turns, turn{string(msg.Role), msg.Content})
+			}
+			assert.Equal(t, tt.turns, turns)
+			assert.Equal(t, len(tt.turns), child.Session.MessageCount)
+			assert.Equal(t, tt.userCount, child.Session.UserMessageCount)
+			assert.Equal(t, tt.startedAt, child.Session.StartedAt.UTC().Format(time.RFC3339))
+		})
+	}
+}
+
 func TestKiroProviderIgnoresSubExecutionLookalikes(t *testing.T) {
 	root := t.TempDir()
 	transcript := writeKiroTestSession(t, root,

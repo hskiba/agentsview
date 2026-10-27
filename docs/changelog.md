@@ -68,8 +68,8 @@ The latest release is
 - Kiro CLI subagent runs now appear as child sessions of the session that
   started them, including subagents started by other subagents. The parent
   transcript shows each delegation with its prompt and result, and links to the
-  subagent's session. Existing archives pick up past subagent runs on the next
-  sync.
+  subagent's session, which opens with the task it was given. Existing archives
+  pick up past subagent runs on the next sync.
 
 ## 0.46.1
 
