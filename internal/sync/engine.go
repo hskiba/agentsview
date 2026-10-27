@@ -21110,6 +21110,14 @@ func (e *Engine) SourceMtime(ctx context.Context, sessionID string) int64 {
 			}
 			return mtime
 		}
+		if mtime, ok, err := parser.KiroSessionSourceMtime(
+			e.sources().agentDirs[def.Type], path,
+		); ok {
+			if err != nil {
+				return 0
+			}
+			return mtime
+		}
 	}
 	if def.Type == parser.AgentZed {
 		if _, _, ok := parser.ParseVirtualSourcePathForBase(path, "threads.db"); ok {

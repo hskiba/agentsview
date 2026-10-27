@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1253,6 +1254,57 @@ func IsKiroSessionTranscriptPath(path string) bool {
 	path = filepath.Clean(path)
 	return filepath.Base(path) == "messages.jsonl" &&
 		isKiroCurrentSessionDir(filepath.Base(filepath.Dir(path)))
+}
+
+// KiroSessionSourceMtime returns the session watcher's equality-only change
+// token for a session transcript under roots: a stat digest of the
+// transcript, its sidecar, and each subagent transcript by name, so a change
+// to any file the session's source parses changes it. ok is false for other
+// paths; a missing transcript returns 0.
+func KiroSessionSourceMtime(roots []string, path string) (int64, bool, error) {
+	roots = cleanJSONLRoots(roots)
+	for _, root := range roots {
+		transcript, _, ok := kiroCurrentPathUnderRoot(root, path)
+		if !ok {
+			continue
+		}
+		info, err := os.Stat(transcript)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, true, nil
+		}
+		if err != nil {
+			return 0, true, err
+		}
+		h := fnv.New64a()
+		addStat := func(name string, info os.FileInfo) {
+			_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00", name, info.Size(), info.ModTime().UnixNano())
+		}
+		addStat("messages.jsonl", info)
+		if sidecar, ok := kiroCurrentSidecarPath(roots, transcript); ok {
+			if sideInfo, err := os.Stat(sidecar); err == nil {
+				addStat("session.json", sideInfo)
+			}
+		}
+		subExecutions, err := kiroSubExecutionFiles(root, transcript)
+		if err != nil {
+			return 0, true, err
+		}
+		for _, sub := range subExecutions {
+			subInfo, err := os.Stat(sub)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return 0, true, err
+			}
+			addStat(kiroSubExecutionsDirName+"/"+filepath.Base(sub), subInfo)
+		}
+		if token := int64(h.Sum64()); token != 0 {
+			return token, true, nil
+		}
+		return 1, true, nil
+	}
+	return 0, false, nil
 }
 
 func (s kiroSourceSet) sourceRef(

@@ -15,6 +15,7 @@ import (
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 type baselineStore struct {
@@ -231,4 +232,84 @@ func TestCheckDBForChangesPositAssistantSidecarAppendFallsBackToSync(
 	require.Len(t, usageEvents, 1)
 	assert.Equal(t, "posit-assistant-keepalive", usageEvents[0].Source)
 	assert.Equal(t, 24639, usageEvents[0].CacheReadInputTokens)
+}
+
+// A Kiro subagent resolves to its session's messages.jsonl, but kiro-cli
+// appends to the subagent's own transcript. When the filesystem event for
+// that append is missed, the fallback must still notice it and sync.
+func TestCheckDBForChangesKiroSubagentAppendFallsBackToSync(t *testing.T) {
+	root := t.TempDir()
+	const (
+		parentRawID = "sess_0123456789abcdef"
+		childRawID  = "11111111-2222-3333-4444-555555555555"
+		sessionID   = "kiro:" + childRawID
+	)
+	sessDir := filepath.Join(root, "workspace", parentRawID)
+	transcriptPath := filepath.Join(sessDir, "messages.jsonl")
+	childPath := filepath.Join(sessDir, "sub-executions", childRawID+".jsonl")
+	dbtest.WriteTestFile(t, transcriptPath, []byte(testjsonl.JoinJSONL(
+		testjsonl.KiroUserJSON("2026-06-01T10:00:00Z", "parent prompt"),
+		testjsonl.KiroSubAgentStartJSON("invoke_subagent_toolu_test01-sub-agent-start", "2026-06-01T10:00:01Z",
+			childRawID, "coder", "do the subtask"),
+	)))
+	childLine := testjsonl.KiroAssistantJSON("2026-06-01T10:00:02Z", "working")
+	dbtest.WriteTestFile(t, childPath, []byte(testjsonl.JoinJSONL(childLine)))
+	baseTime := time.Date(2026, time.June, 1, 10, 0, 5, 0, time.UTC)
+	for _, path := range []string{transcriptPath, childPath} {
+		require.NoError(t, os.Chtimes(path, baseTime, baseTime))
+	}
+
+	database := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentKiro: {root}},
+		Machine:   "test",
+	})
+	t.Cleanup(engine.Close)
+	require.Equal(t, 2, engine.SyncAll(t.Context(), nil).Synced)
+
+	lastCount, lastDBVersion, ok := database.GetSessionVersion(t.Context(), sessionID)
+	require.True(t, ok)
+	sourcePath := engine.FindSourceFile(t.Context(), sessionID)
+	require.Equal(t, transcriptPath, sourcePath)
+	lastFileMtime := engine.SourceMtime(t.Context(), sessionID)
+	require.NotZero(t, lastFileMtime)
+
+	dbtest.WriteTestFile(t, childPath, []byte(testjsonl.JoinJSONL(
+		childLine, testjsonl.KiroAssistantJSON("2026-06-01T10:00:03Z", "subtask done"),
+	)))
+	childTime := baseTime.Add(time.Minute)
+	require.NoError(t, os.Chtimes(childPath, childTime, childTime))
+
+	watcher := New(database, engine)
+	var fileMtimeChangedAt time.Time
+	changed := watcher.checkDBForChanges(t.Context(),
+		sessionID,
+		&lastCount,
+		&lastDBVersion,
+		&sourcePath,
+		&lastFileMtime,
+		&fileMtimeChangedAt,
+	)
+	assert.False(t, changed, "the fallback delay must elapse before direct sync")
+	require.False(t, fileMtimeChangedAt.IsZero(),
+		"a subagent-only append must start the fallback timer")
+
+	fileMtimeChangedAt = time.Now().Add(-SyncFallbackDelay)
+	changed = watcher.checkDBForChanges(t.Context(),
+		sessionID,
+		&lastCount,
+		&lastDBVersion,
+		&sourcePath,
+		&lastFileMtime,
+		&fileMtimeChangedAt,
+	)
+	require.True(t, changed, "the elapsed fallback must sync the subagent")
+
+	messages, err := database.GetAllMessages(t.Context(), sessionID)
+	require.NoError(t, err)
+	var contents []string
+	for _, message := range messages {
+		contents = append(contents, message.Content)
+	}
+	assert.Equal(t, []string{"do the subtask", "working", "subtask done"}, contents)
 }
