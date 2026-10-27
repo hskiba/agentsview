@@ -538,12 +538,18 @@ func (p *kiroProvider) parseCurrentSession(
 // including subagents spawned by other subagents.
 const kiroSubExecutionsDirName = "sub-executions"
 
-// kiroSubExecutionFiles lists the subagent transcripts admitted for a
-// session transcript: regular <subSessionId>.jsonl files directly inside the
-// session's sub-executions directory that resolve inside root, sorted by
-// name. Subdirectories, other extensions, invalid or session-shaped IDs, and
-// symlinks that escape root are ignored.
-func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
+type kiroSubExecution struct {
+	path string
+	err  error
+}
+
+// kiroSubExecutionFiles lists a session's subagent transcripts, sorted by
+// name: regular <subSessionId>.jsonl files directly inside its
+// sub-executions directory that resolve inside root, and files whose probe
+// failed, which carry the error and are never read. Subdirectories, other
+// extensions, invalid or session-shaped IDs, and symlinks that escape root
+// are ignored.
+func kiroSubExecutionFiles(root, transcript string) ([]kiroSubExecution, error) {
 	dir := filepath.Join(filepath.Dir(transcript), kiroSubExecutionsDirName)
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -562,7 +568,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("list Kiro sub-executions: %w", err)
 	}
-	var files []string
+	var files []kiroSubExecution
 	for _, entry := range entries {
 		subID, ok := strings.CutSuffix(entry.Name(), ".jsonl")
 		if !ok || !isKiroSubagentID(subID) || entry.IsDir() {
@@ -571,13 +577,12 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 		path := filepath.Join(dir, entry.Name())
 		regular, err := kiroRegularFileUnderRootChecked(root, path)
 		if err != nil {
-			return nil, fmt.Errorf("probe Kiro sub-execution: %w", err)
-		}
-		if regular {
-			files = append(files, path)
+			files = append(files, kiroSubExecution{path: path, err: fmt.Errorf("probe Kiro sub-execution: %w", err)})
+		} else if regular {
+			files = append(files, kiroSubExecution{path: path})
 		}
 	}
-	slices.Sort(files)
+	slices.SortFunc(files, func(a, b kiroSubExecution) int { return strings.Compare(a.path, b.path) })
 	return files, nil
 }
 
@@ -618,13 +623,18 @@ func parseKiroSubExecutions(
 	}
 	var parsed []childTranscript
 	var sourceErrs []SourceError
-	for _, path := range files {
+	for _, sub := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
+		path := sub.path
 		subID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 		id := "kiro:" + subID
-		transcript, err := readKiroCurrentTranscript(path)
+		var transcript kiroCurrentTranscript
+		err := sub.err
+		if err == nil {
+			transcript, err = readKiroCurrentTranscript(path)
+		}
 		if err != nil {
 			sourceErrs = append(sourceErrs, SourceError{
 				SourceKey: VirtualSourcePath(parent.File.Path, subID), DisplayPath: path,

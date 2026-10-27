@@ -693,7 +693,9 @@ func TestKiroProviderUnreadableSubagentFailsOnlyThatSubagent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, sources, 1, "a session and its subagents are one source")
 
-	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0]})
+	fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
+	require.NoError(t, err, "fingerprint %s", sources[0].DisplayPath)
+	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
 	require.NoError(t, err, "parse %s", sources[0].DisplayPath)
 
 	var ids []string

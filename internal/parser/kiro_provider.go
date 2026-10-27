@@ -120,7 +120,11 @@ func (p *kiroProvider) ParseSourceSize(ctx context.Context, source SourceRef) (i
 		if err != nil {
 			return 0, err
 		}
-		paths = append(paths, subExecutions...)
+		for _, sub := range subExecutions {
+			if sub.err == nil {
+				paths = append(paths, sub.path)
+			}
+		}
 	case kiroSourceLegacyJSONL:
 		sidecar, found, err := kiroLegacySidecarPath(p.sources.roots, src.Path)
 		if err != nil {
@@ -1109,7 +1113,7 @@ func (s kiroSourceSet) Fingerprint(
 		return fingerprint, nil
 	}
 	sidecar := ""
-	var subExecutions []string
+	var subExecutions []kiroSubExecution
 	switch src.Kind {
 	case kiroSourceCurrentJSONL:
 		if sidecar, ok := kiroCurrentSidecarPath(s.roots, src.Path); ok {
@@ -1120,22 +1124,24 @@ func (s kiroSourceSet) Fingerprint(
 				}
 			}
 		}
-		admitted, err := kiroSubExecutionFiles(src.Root, src.Path)
+		listed, err := kiroSubExecutionFiles(src.Root, src.Path)
 		if err != nil {
 			return SourceFingerprint{}, err
 		}
-		for _, path := range admitted {
-			subInfo, statErr := os.Stat(path)
-			if statErr != nil {
-				if errors.Is(statErr, os.ErrNotExist) {
-					// Removed since the directory was listed.
-					continue
+		for _, sub := range listed {
+			if sub.err == nil {
+				subInfo, statErr := os.Stat(sub.path)
+				if statErr != nil {
+					if errors.Is(statErr, os.ErrNotExist) {
+						// Removed since the directory was listed.
+						continue
+					}
+					return SourceFingerprint{}, fmt.Errorf("stat %s: %w", sub.path, statErr)
 				}
-				return SourceFingerprint{}, fmt.Errorf("stat %s: %w", path, statErr)
+				fingerprint.Size += subInfo.Size()
+				fingerprint.MTimeNS = max(fingerprint.MTimeNS, subInfo.ModTime().UnixNano())
 			}
-			subExecutions = append(subExecutions, path)
-			fingerprint.Size += subInfo.Size()
-			fingerprint.MTimeNS = max(fingerprint.MTimeNS, subInfo.ModTime().UnixNano())
+			subExecutions = append(subExecutions, sub)
 		}
 	case kiroSourceLegacyJSONL:
 		candidate, found, sidecarErr := kiroLegacySidecarPath(s.roots, src.Path)
@@ -1200,19 +1206,25 @@ func hashKiroJSONLSource(transcript, sidecar string) (string, error) {
 }
 
 // extendKiroHashWithSubExecutions folds a session's subagent transcripts
-// into its source hash. Sessions without subagent transcripts keep the
-// plain transcript-and-sidecar hash, so archived sessions are not reparsed.
+// into its source hash; one that cannot be read hashes as unreadable for
+// Parse to report. Sessions without subagent transcripts keep the plain
+// transcript-and-sidecar hash, so archived sessions are not reparsed.
 func extendKiroHashWithSubExecutions(
-	ctx context.Context, base string, paths []string,
+	ctx context.Context, base string, subs []kiroSubExecution,
 ) (string, error) {
 	h := sha256.New()
 	h.Write([]byte("kiro-current-sub-executions\x00" + base))
-	for _, path := range paths {
-		fileHash, err := hashJSONLSourceFileContext(ctx, path)
-		if err != nil {
-			return "", err
+	for _, sub := range subs {
+		fileHash := "unreadable"
+		if sub.err == nil {
+			hash, err := hashJSONLSourceFileContext(ctx, sub.path)
+			if err == nil {
+				fileHash = hash
+			} else if ctx.Err() != nil {
+				return "", err
+			}
 		}
-		h.Write([]byte("\x00" + filepath.Base(path) + "\x00" + fileHash))
+		h.Write([]byte("\x00" + filepath.Base(sub.path) + "\x00" + fileHash))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -1293,8 +1305,12 @@ func KiroSessionSourceMtime(roots []string, path string) (int64, bool, error) {
 			_, _ = fmt.Fprintf(h, "%s\x00error\x00", kiroSubExecutionsDirName)
 		}
 		for _, sub := range subExecutions {
-			name := kiroSubExecutionsDirName + "/" + filepath.Base(sub)
-			subInfo, err := os.Stat(sub)
+			name := kiroSubExecutionsDirName + "/" + filepath.Base(sub.path)
+			if sub.err != nil {
+				_, _ = fmt.Fprintf(h, "%s\x00error\x00", name)
+				continue
+			}
+			subInfo, err := os.Stat(sub.path)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
