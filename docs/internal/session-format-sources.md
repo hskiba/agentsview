@@ -3450,18 +3450,11 @@ schemas keep their existing ordering behavior.
     `sub_agent_start` (`subSessionId`, `subAgentName`, `prompt`,
     `explanation`) and a `sub_agent_complete` (`subSessionId`, `status`,
     `response`, `errorMessage`); it writes no `tool_call` for the spawn, and
-    record `id` values can repeat, so `subSessionId` is the pairing key.
-    Agentsview parses a session and its sub-executions files as one source. It
-    maps each spawn to an `invoke_subagent` Task tool call and result, and
-    emits each subagent as session `kiro:<subSessionId>` linked to the
-    transcript whose `sub_agent_start` names it, or to the top session when no
-    start record names it. Only regular `<id>.jsonl` files directly inside
-    `sub-executions` count. Sessions without them keep their prior source
-    fingerprint, so no data-version bump is needed. Observed in local kiro-cli
-    2.34.1 output on 2026-10-27; there is no producer schema. Limits: a session
-    whose SQLite duplicate outranks its current JSONL source emits no
-    subagents, and a `subSessionId` copied into two sessions is stored once,
-    linked to whichever spawning session synced last.
+    record `id` values can repeat, so `subSessionId` is the pairing key. This
+    layout was observed in local kiro-cli 2.34.1 output on 2026-10-27: every
+    `sub_agent_start` had a matching sub-executions file, `response` was
+    always a string, and failed spawns could also set `errorMessage`. There is
+    no producer schema.
 
 - **Evidence:** `documentation`.
 
@@ -3502,6 +3495,21 @@ schemas keep their existing ordering behavior.
   `session.json` and the legacy JSONL sidecar carry a `title`, which
   Agentsview uses as the session name; the SQLite generation carries none. The
   first message falls back to the title only when there is no user message.
+
+    A current-layout session source parses its `messages.jsonl` together with
+    its sub-executions files; only regular `<id>.jsonl` files directly inside
+    `sub-executions` count. Each spawn becomes an `invoke_subagent` Task tool
+    call and result, and each subagent becomes session `kiro:<subSessionId>`,
+    linked to the transcript whose `sub_agent_start` names it (the top session
+    when none does) and inheriting its project and working directory. The
+    session source owns those child rows, so a removed subagent transcript
+    marks its session source-missing. Sessions without sub-executions files
+    keep their previous fingerprint, and because every observed spawn record
+    has a sub-executions file, sessions with spawns change fingerprint and are
+    reparsed without a data-version bump. Limits: a session whose SQLite
+    duplicate outranks its current JSONL source emits no subagents, and a
+    `subSessionId` copied into two sessions is stored once, linked to
+    whichever spawning session synced last.
 
 ## Kiro IDE (`kiro-ide`)
 
