@@ -1288,17 +1288,21 @@ func KiroSessionSourceMtime(roots []string, path string) (int64, bool, error) {
 		}
 		subExecutions, err := kiroSubExecutionFiles(root, transcript)
 		if err != nil {
-			return 0, true, err
+			// Sync reports the error. A token that names it keeps the session
+			// watched and changes again once the error clears.
+			_, _ = fmt.Fprintf(h, "%s\x00error\x00", kiroSubExecutionsDirName)
 		}
 		for _, sub := range subExecutions {
+			name := kiroSubExecutionsDirName + "/" + filepath.Base(sub)
 			subInfo, err := os.Stat(sub)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			if err != nil {
-				return 0, true, err
+				_, _ = fmt.Fprintf(h, "%s\x00error\x00", name)
+				continue
 			}
-			addStat(kiroSubExecutionsDirName+"/"+filepath.Base(sub), subInfo)
+			addStat(name, subInfo)
 		}
 		if token := int64(h.Sum64()); token != 0 {
 			return token, true, nil
