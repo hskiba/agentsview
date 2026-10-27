@@ -206,18 +206,23 @@ func TestKiroProviderParsesSubagentTranscriptsAsLinkedChildren(t *testing.T) {
 		"a failed spawn reports its error message as the result")
 }
 
-func TestKiroProviderSubagentResultFallsBackToErrorMessage(t *testing.T) {
+// A sub_agent_complete record becomes the spawn's tool result. Its content
+// falls back to errorMessage when response is empty, and its status maps
+// kiro-cli's success and error so tool health can count a failed spawn.
+func TestKiroProviderSubagentCompletionResult(t *testing.T) {
 	tests := []struct {
 		name   string
 		subID  string
 		fields map[string]any
 		want   string // raw result JSON; empty when no result is recorded
+		status string
 	}{
 		{
-			name:   "null response uses the error message",
+			name:   "failed spawn with a null response uses the error message",
 			subID:  "00000000-0000-4000-8000-000000000001",
-			fields: map[string]any{"response": nil, "errorMessage": "e"},
+			fields: map[string]any{"status": "error", "response": nil, "errorMessage": "e"},
 			want:   `"e"`,
+			status: "errored",
 		},
 		{
 			name:   "missing response uses the error message",
@@ -232,15 +237,16 @@ func TestKiroProviderSubagentResultFallsBackToErrorMessage(t *testing.T) {
 			want:   `"ok"`,
 		},
 		{
-			name:   "object response is kept as JSON",
+			name:   "successful spawn keeps an object response as JSON",
 			subID:  "00000000-0000-4000-8000-000000000004",
-			fields: map[string]any{"response": map[string]any{"t": 1}},
+			fields: map[string]any{"status": "success", "response": map[string]any{"t": 1}},
 			want:   `{"t":1}`,
+			status: "completed",
 		},
 		{
-			name:   "empty response without an error message",
+			name:   "unrecognized status leaves the outcome unknown",
 			subID:  "00000000-0000-4000-8000-000000000005",
-			fields: map[string]any{"response": ""},
+			fields: map[string]any{"status": "pending", "response": ""},
 			want:   `""`,
 		},
 		{
@@ -261,17 +267,24 @@ func TestKiroProviderSubagentResultFallsBackToErrorMessage(t *testing.T) {
 	}
 	root := t.TempDir()
 	writeKiroTestSession(t, root, lines...)
-	results := kiroTestToolResults(parseKiroTestSessions(t, root)["kiro:"+kiroTestParentRawID])
+	results := map[string]ParsedToolResult{}
+	for _, message := range parseKiroTestSessions(t, root)["kiro:"+kiroTestParentRawID].Messages {
+		for _, result := range message.ToolResults {
+			results[result.ToolUseID] = result
+		}
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, recorded := results[tt.subID]
 			if tt.want == "" {
-				assert.False(t, recorded, "sub_agent_complete for %q recorded result %s", tt.subID, got)
+				assert.False(t, recorded, "sub_agent_complete for %q recorded result %+v", tt.subID, got)
 				return
 			}
 			require.True(t, recorded, "sub_agent_complete for %q with %v recorded no result", tt.subID, tt.fields)
-			assert.Equal(t, tt.want, got, "result for sub_agent_complete %v", tt.fields)
+			assert.Equal(t, tt.want, got.ContentRaw, "result for sub_agent_complete %v", tt.fields)
+			assert.Equal(t, "tool_result", got.Source, "source for sub_agent_complete %v", tt.fields)
+			assert.Equal(t, tt.status, got.Status, "status for sub_agent_complete %v", tt.fields)
 		})
 	}
 }

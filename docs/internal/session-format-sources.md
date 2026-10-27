@@ -3523,23 +3523,23 @@ schemas keep their existing ordering behavior.
     `kiro:sess_<id>` would collide with that session. Each spawn becomes an
     `invoke_subagent` Task tool call and result; the result records `success`
     as `completed` and `error` as `errored`, so a failed delegation counts in
-    tool health. Ordinary `tool_result` records' `success` is not read. Each
-    subagent becomes session `kiro:<subSessionId>`, linked to the transcript
-    whose `sub_agent_start` names it (the top session when none does), named
-    by its `subAgentName`, and inheriting its project and working directory.
-    The prompt stays on the spawning transcript's Task call; the subagent's
-    own transcript holds only what kiro-cli wrote there. The session source
-    owns those child rows, so a removed subagent transcript marks its session
-    source-missing. Sessions without sub-executions files keep their previous
+    tool health, and leaves any other value unknown. Ordinary `tool_result`
+    records' `success` is not read. Each subagent becomes session
+    `kiro:<subSessionId>`, linked to the transcript whose `sub_agent_start`
+    names it (the top session when none does), named by its `subAgentName`,
+    and inheriting its project and working directory. The prompt stays on the
+    spawning transcript's Task call; the subagent's own transcript holds only
+    what kiro-cli wrote there. The session source owns those child rows, so a
+    removed subagent transcript marks its session source-missing. Sessions without sub-executions files keep their previous
     fingerprint, and because every observed spawn record has a sub-executions
     file, sessions with spawns change fingerprint and are reparsed without a
-    data-version bump. Limits: a session whose SQLite
-    duplicate outranks its current JSONL source emits no subagents; a
-    `subSessionId` copied into two sessions is stored once, linked to
-    whichever spawning session synced last; and while a nested subagent's
-    spawning transcript is missing or unreadable, the subagent is unnamed and
-    parsed under the top session, though its stored parent stays on the
-    spawner through the archived Task call.
+    data-version bump. Limits: a session whose SQLite duplicate outranks its
+    current JSONL source emits no subagents; a `subSessionId` copied into two
+    sessions is stored once, linked to whichever spawning session synced last;
+    and while a nested subagent's spawning transcript is missing or
+    unreadable, the subagent is unnamed and parsed under the top session,
+    though its stored parent stays on the spawner through the archived Task
+    call.
 
 ## Kiro IDE (`kiro-ide`)
 
