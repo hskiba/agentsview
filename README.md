@@ -888,6 +888,28 @@ Pre-commit and pre-push hooks via [prek](https://github.com/j178/prek): run
 `make lint-tools` and `make install-hooks` after cloning (requires `prek` 0.5.7
 or newer and `uv`).
 
+### Shared Go build cache
+
+`make` targets build and test Go code with `-trimpath`. Compiled packages then
+record module-relative source paths instead of the checkout's absolute path, so
+every clone and git worktree shares one Go build cache. Without it, each
+worktree compiles and stores its own copy of every package.
+
+- Opt out for one command with `make test GOFLAGS=-trimpath=false`.
+- Plain `go` commands outside `make` do not add the flag. Run
+  `go env -w GOFLAGS=-trimpath` to make it your default; `make` keeps flags
+  saved this way and appends `-trimpath` only when it is missing.
+
+Trimmed binaries need a source mapping in Delve:
+
+- `dlv debug` and `dlv test` inherit `GOFLAGS` and cannot find source files.
+  Pass `--build-flags=-trimpath=false`. Debug builds disable optimizations, so
+  they never shared cache entries with normal builds anyway.
+- For `dlv exec` or `dlv attach` on a trimmed binary, start Delve from the
+  repository root and run `config substitute-path -guess` (Delve 1.24 or
+  newer). It maps the module path to your checkout, the standard library to
+  `GOROOT`, and dependencies to the module cache.
+
 ### Project Layout
 
 ```
