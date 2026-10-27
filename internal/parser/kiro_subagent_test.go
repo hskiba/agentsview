@@ -812,12 +812,14 @@ func TestKiroProviderFindSourceIgnoresOtherSessionsProbeFailures(t *testing.T) {
 		{
 			name: "sub-executions is a file",
 			breakDir: func(t *testing.T, dir string) {
+				t.Helper()
 				writeSourceFile(t, dir, "not a directory")
 			},
 		},
 		{
 			name: "sub-executions is unreadable",
 			breakDir: func(t *testing.T, dir string) {
+				t.Helper()
 				require.NoError(t, os.MkdirAll(dir, 0o755))
 				require.NoError(t, os.Chmod(dir, 0))
 				t.Cleanup(func() { assert.NoError(t, os.Chmod(dir, 0o755)) })

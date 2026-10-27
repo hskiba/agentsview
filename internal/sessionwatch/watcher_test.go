@@ -358,6 +358,7 @@ func TestCheckDBForChangesKiroSessionFilesStartFallback(t *testing.T) {
 			name:  "another subagent transcript appears",
 			watch: kiroWatchChildID,
 			change: func(t *testing.T, w *kiroWatchedSession) {
+				t.Helper()
 				path := filepath.Join(w.sessDir, "sub-executions", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
 				dbtest.WriteTestFile(t, path, []byte(testjsonl.JoinJSONL(
 					testjsonl.KiroAssistantJSON("2026-06-01T10:00:03Z", "testing"),
@@ -369,6 +370,7 @@ func TestCheckDBForChangesKiroSessionFilesStartFallback(t *testing.T) {
 			name:  "another subagent transcript is removed",
 			watch: kiroWatchChildID,
 			change: func(t *testing.T, w *kiroWatchedSession) {
+				t.Helper()
 				require.NoError(t, os.Remove(w.siblingPath))
 			},
 		},
@@ -376,6 +378,7 @@ func TestCheckDBForChangesKiroSessionFilesStartFallback(t *testing.T) {
 			name:  "the session metadata is rewritten",
 			watch: kiroWatchChildID,
 			change: func(t *testing.T, w *kiroWatchedSession) {
+				t.Helper()
 				path := filepath.Join(w.sessDir, "session.json")
 				dbtest.WriteTestFile(t, path, []byte(`{"title":"After"}`))
 				require.NoError(t, os.Chtimes(path, w.baseTime, w.baseTime))
@@ -385,6 +388,7 @@ func TestCheckDBForChangesKiroSessionFilesStartFallback(t *testing.T) {
 			name:  "the subagent directory becomes unreadable",
 			watch: kiroWatchParentID,
 			change: func(t *testing.T, w *kiroWatchedSession) {
+				t.Helper()
 				dir := filepath.Join(w.sessDir, "sub-executions")
 				require.NoError(t, os.Chmod(dir, 0))
 				t.Cleanup(func() { assert.NoError(t, os.Chmod(dir, 0o755)) })

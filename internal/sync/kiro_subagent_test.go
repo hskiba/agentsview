@@ -288,12 +288,14 @@ func TestKiroSubagentWriteFailureRetriesWholeSession(t *testing.T) {
 		{
 			name: "single-session refresh",
 			refresh: func(t *testing.T, env *testEnv) {
+				t.Helper()
 				require.Error(t, env.engine.SyncSingleSession(kiroSubagentParentID))
 			},
 		},
 		{
 			name: "full sync",
 			refresh: func(t *testing.T, env *testEnv) {
+				t.Helper()
 				stats := env.engine.SyncAll(t.Context(), nil)
 				require.False(t, stats.Aborted)
 				require.Equal(t, 1, stats.Failed)
