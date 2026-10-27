@@ -1,6 +1,7 @@
 package sync_test
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -273,4 +274,73 @@ func TestKiroSubagentTranscriptsSyncAsChildSessions(t *testing.T) {
 		kiroSpawnLinks(t, env.db, kiroSubagentParentID),
 		"the parent transcript should record the spawn as a Task call linked to the child",
 	)
+}
+
+// A session and its subagents are written as one source. When a refresh
+// writes the session but fails to write a subagent, the session must stay
+// stale so the next ordinary sync retries the subagent instead of skipping
+// the unchanged source.
+func TestKiroSubagentWriteFailureRetriesWholeSession(t *testing.T) {
+	tests := []struct {
+		name    string
+		refresh func(t *testing.T, env *testEnv)
+	}{
+		{
+			name: "single-session refresh",
+			refresh: func(t *testing.T, env *testEnv) {
+				require.Error(t, env.engine.SyncSingleSession(kiroSubagentParentID))
+			},
+		},
+		{
+			name: "full sync",
+			refresh: func(t *testing.T, env *testEnv) {
+				stats := env.engine.SyncAll(t.Context(), nil)
+				require.False(t, stats.Aborted)
+				require.Equal(t, 1, stats.Failed)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+			sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
+			stats := env.engine.SyncAll(t.Context(), nil)
+			require.False(t, stats.Aborted)
+			require.Zero(t, stats.Failed)
+
+			spawnKiroLaterSubagent(t, sessDir)
+			raw, err := sql.Open("sqlite3", env.db.Path())
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, raw.Close()) })
+			_, err = raw.ExecContext(t.Context(), `
+				CREATE TRIGGER fail_kiro_subagent_insert
+				BEFORE INSERT ON sessions
+				WHEN NEW.id = '`+kiroSubagentLaterID+`'
+				BEGIN
+					SELECT RAISE(FAIL, 'injected Kiro subagent write failure');
+				END;
+			`)
+			require.NoError(t, err)
+
+			tt.refresh(t, env)
+			later, err := env.db.GetSessionFull(t.Context(), kiroSubagentLaterID)
+			require.NoError(t, err)
+			require.Nil(t, later, "the injected failure must leave the new subagent unwritten")
+
+			_, err = raw.ExecContext(t.Context(), `DROP TRIGGER fail_kiro_subagent_insert`)
+			require.NoError(t, err)
+			retry := env.engine.SyncAll(t.Context(), nil)
+			require.False(t, retry.Aborted)
+			assert.Zero(t, retry.Failed)
+
+			later, err = env.db.GetSessionFull(t.Context(), kiroSubagentLaterID)
+			require.NoError(t, err)
+			assert.NotNil(t, later, "the next sync must retry the subagent the refresh failed to write")
+			parent, err := env.db.GetSessionFull(t.Context(), kiroSubagentParentID)
+			require.NoError(t, err)
+			require.NotNil(t, parent)
+			assert.Equal(t, db.CurrentDataVersion(), parent.DataVersion,
+				"the session is current once every subagent is written")
+		})
+	}
 }

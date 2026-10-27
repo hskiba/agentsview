@@ -1246,6 +1246,15 @@ func KiroSQLiteSourcePresent(source SourceRef) bool {
 	return ok && IsRegularFile(src.DBPath)
 }
 
+// IsKiroSessionTranscriptPath reports whether path names a current-layout
+// session transcript, sess_<id>/messages.jsonl, whose source emits the session
+// and its subagents.
+func IsKiroSessionTranscriptPath(path string) bool {
+	path = filepath.Clean(path)
+	return filepath.Base(path) == "messages.jsonl" &&
+		isKiroCurrentSessionDir(filepath.Base(filepath.Dir(path)))
+}
+
 func (s kiroSourceSet) sourceRef(
 	root, path string,
 	allowMissing bool,

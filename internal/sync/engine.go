@@ -1399,7 +1399,7 @@ func (e *Engine) clearProviderSourceFreshness(
 // partitionIntentionalSourceSkips separates active source members from rows
 // that user policy permanently excludes or keeps in trash. Those policy skips
 // already resolve the member for source freshness and must not make active
-// Claude DAG branches stale.
+// members stale.
 func (e *Engine) partitionIntentionalSourceSkips(ctx context.Context,
 	ids []string,
 ) (active []string, skipped map[string]bool) {
@@ -10725,9 +10725,9 @@ func (e *Engine) collectAndBatchWithOptions(
 			if ctx.Err() != nil && e.discardWritesOnCancel {
 				return
 			}
-			// Claude can emit several session rows from one DAG transcript.
-			// Those rows are initially written below the current data version,
-			// then promoted together only after every active member succeeds.
+			// A Claude DAG transcript or a Kiro session with subagents emits
+			// several session rows, written below the current data version and
+			// promoted together only after every active member succeeds.
 			// User-excluded and trashed members are already resolved by policy;
 			// a crash, veto, or failed active member still leaves the source stale.
 			for i, pw := range pending {
@@ -10999,7 +10999,7 @@ func (e *Engine) collectAndBatchWithOptions(
 			continue
 		}
 		atomicDAG := sourceRequiresAtomicDAGCompletion(
-			r.agent, len(r.results),
+			r.agent, r.path, len(r.results),
 		)
 		var sourceCompletionSkipped map[string]bool
 		if atomicDAG {
@@ -11219,11 +11219,9 @@ func (e *Engine) collectAndBatchWithOptions(
 					sourceCompletionSkipped: sourceCompletionSkipped[applyIDPrefixToID(e.idPrefix, pr.Session.ID)],
 				}
 				if i == 0 && (atomicDAG || r.providerStatHash != nil) {
-					// Claude-compatible providers can emit several DAG branches
-					// from one transcript.
-					// Carry their contiguous write count so the flush can make
-					// one source-level completion decision. Other digest-backed
-					// providers currently emit one result per source.
+					// Carry an atomic source's contiguous write count so the
+					// flush can make one source-level completion decision. Other
+					// digest-backed providers currently emit one result per source.
 					pw.sourceWriteCount = 1
 					if atomicDAG {
 						pw.sourceWriteCount = len(allowed)
@@ -17883,8 +17881,8 @@ type pendingWrite struct {
 	// providerStatHash is set on the first allowed ParseResult of a
 	// source whose processResult staged a per-component freshness digest.
 	// sourceWriteCount tells the flush how many contiguous results must commit
-	// before it may persist the digest. Claude uses the full DAG result count;
-	// other digest-backed providers currently use one.
+	// before it may persist the digest. Atomic sources use their full result
+	// count; other digest-backed providers currently use one.
 	providerStatHash         *pendingProviderStatHash
 	sourceWriteCount         int
 	sourceCompletionEligible bool
@@ -21575,7 +21573,7 @@ func (e *Engine) processAndWriteSessionFile(
 		)
 	}
 	atomicDAG := sourceRequiresAtomicDAGCompletion(
-		file.Agent, len(res.results),
+		file.Agent, file.Path, len(res.results),
 	)
 	var sourceCompletionSkipped map[string]bool
 	if atomicDAG {
@@ -21587,7 +21585,7 @@ func (e *Engine) processAndWriteSessionFile(
 		); err != nil {
 			e.clearProviderSourceFreshness(ctx, res.providerStatHash)
 			return false, sessionsChanged, fmt.Errorf(
-				"stage Claude source data versions: %w", err,
+				"stage DAG source data versions: %w", err,
 			)
 		}
 	}
@@ -21818,10 +21816,13 @@ func (e *Engine) processAndWriteSessionFile(
 }
 
 func sourceRequiresAtomicDAGCompletion(
-	agent parser.AgentType, resultCount int,
+	agent parser.AgentType, sourcePath string, resultCount int,
 ) bool {
 	if resultCount <= 1 {
 		return false
+	}
+	if agent == parser.AgentKiro {
+		return parser.IsKiroSessionTranscriptPath(sourcePath)
 	}
 	return isClaudeFormatAgent(agent)
 }
