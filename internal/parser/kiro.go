@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -583,7 +584,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]kiroSubExecution, error) 
 			files = append(files, kiroSubExecution{path: path})
 		}
 	}
-	slices.SortFunc(files, func(a, b kiroSubExecution) int { return strings.Compare(a.path, b.path) })
+	slices.SortFunc(files, func(a, b kiroSubExecution) int { return cmp.Compare(a.path, b.path) })
 	return files, nil
 }
 
