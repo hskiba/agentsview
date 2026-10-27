@@ -775,8 +775,7 @@ func TestKiroProviderParseSourceSizeCoversEveryParsedFile(t *testing.T) {
 	}
 }
 
-// The SQLite store keeps the size the engine charged before Kiro reported
-// its own: the whole database file.
+// A Kiro SQLite source is charged the whole database file.
 func TestKiroProviderParseSourceSizeChargesTheWholeSQLiteStore(t *testing.T) {
 	root := t.TempDir()
 	dbPath, db := newKiroProviderSQLiteDBAt(t, root)
