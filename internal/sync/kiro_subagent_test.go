@@ -344,3 +344,36 @@ func TestKiroSubagentWriteFailureRetriesWholeSession(t *testing.T) {
 		})
 	}
 }
+
+// Only a session transcript's rows are completed together. A Kiro SQLite
+// store holds independent sessions, so a failed write leaves the others
+// current.
+func TestKiroSQLiteWriteFailureLeavesOtherSessionsCurrent(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+	ks := createKiroSQLiteDB(t, env.kiroDir)
+	payload := readKiroSQLiteFixture(t, "standard_payload.json")
+	for _, id := range []string{"healthy-session", "failing-session"} {
+		ks.addSession(t, "/home/user/code/kiro-app", id, payload, 1779012000000, 1779012030000)
+	}
+	raw, err := sql.Open("sqlite3", env.db.Path())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, raw.Close()) })
+	_, err = raw.ExecContext(t.Context(), `
+		CREATE TRIGGER fail_kiro_sqlite_insert
+		BEFORE INSERT ON sessions
+		WHEN NEW.id = 'kiro:failing-session'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected Kiro SQLite write failure');
+		END;
+	`)
+	require.NoError(t, err)
+
+	stats := env.engine.SyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted)
+	require.Equal(t, 1, stats.Failed)
+
+	healthy, err := env.db.GetSessionFull(t.Context(), "kiro:healthy-session")
+	require.NoError(t, err)
+	require.NotNil(t, healthy)
+	assert.Equal(t, db.CurrentDataVersion(), healthy.DataVersion)
+}
