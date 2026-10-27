@@ -608,7 +608,8 @@ CREATE INDEX IF NOT EXISTS idx_provider_freshness_updated_at
 // VS Code-format sources in place; source and session identities are unchanged.)
 // (148: link ordinary Codex forks to the thread named by forked_from_id. Re-parse
 // Codex-format sources in place; source and session identities are unchanged.)
-const dataVersion = 148
+// (149: reparse Command Code v3 transcripts, token usage, and fork links in place.)
+const dataVersion = 149
 
 const archiveOnlyVersionBase = 1 << 20
 

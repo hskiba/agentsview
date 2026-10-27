@@ -60,6 +60,9 @@ The latest release is
   `serve --no-sync` also says at startup when the archive needs a rebuild.
 - Usage notes keep a straight accent on the leading edge of the card. The
   accent no longer bends around the card's rounded corners.
+- Command Code v3 sessions appear with their titles, tool calls, and token
+  costs. Forks count only new usage, and existing sessions are reprocessed
+  on upgrade.
 - Foreground `agentsview serve` now exits with status 1 when a server is already
   running so service managers retry. `serve --background` and `daemon start`
   still exit with status 0.
