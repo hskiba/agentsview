@@ -65,6 +65,11 @@ The latest release is
   instead of a blank page. VS Code saves each web fetch as two tool calls with
   the same ID, and AgentsView now keeps only the visible one. Existing VS Code
   Copilot, Positron, and Windsurf sessions are reprocessed on upgrade.
+- Kiro CLI subagent runs now appear as child sessions of the session that
+  started them, including subagents started by other subagents. The parent
+  transcript shows each delegation with its prompt and result, and links to the
+  subagent's session. Existing archives pick up past subagent runs on the next
+  sync.
 
 ## 0.46.1
 
