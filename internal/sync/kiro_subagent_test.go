@@ -119,6 +119,19 @@ func TestKiroSubagentTranscriptSyncsFromChangedPath(t *testing.T) {
 	stats = env.engine.SyncAll(t.Context(), nil)
 	require.False(t, stats.Aborted)
 	assert.ElementsMatch(t, want, childIDs(), "a later full sync keeps every child")
+
+	// Removing a subagent transcript keeps its archived session and marks it
+	// as missing its source.
+	require.NoError(t, os.Remove(laterChild))
+	env.engine.SyncPaths([]string{laterChild})
+	removed, err := env.db.GetSessionFull(t.Context(), "kiro:"+laterChildRawID)
+	require.NoError(t, err)
+	require.NotNil(t, removed, "a removed subagent transcript must stay archived")
+	assert.NotNil(t, removed.SourceMissingAt, "a removed subagent transcript should be marked source-missing")
+	kept, err := env.db.GetSessionFull(t.Context(), kiroSubagentChildID)
+	require.NoError(t, err)
+	require.NotNil(t, kept)
+	assert.Nil(t, kept.SourceMissingAt, "subagents whose transcripts remain stay current")
 }
 
 func TestKiroSubagentTranscriptsSyncAsChildSessions(t *testing.T) {

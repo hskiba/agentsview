@@ -338,19 +338,32 @@ func (t kiroCurrentTranscript) userMessageCount() int {
 	return count
 }
 
-// readKiroCurrentTranscript parses one current-layout Kiro JSONL file. It
-// reports found=false when the file does not exist.
-func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, bool, error) {
+// bounds returns the first and last accepted message timestamps, falling back
+// to the file's modification time when no record carried a timestamp.
+func (t kiroCurrentTranscript) bounds() (time.Time, time.Time) {
+	startedAt, endedAt := t.EarliestMessage, t.LatestMessage
+	if startedAt.IsZero() {
+		startedAt = t.ModTime
+	}
+	if endedAt.IsZero() {
+		endedAt = t.ModTime
+	}
+	return startedAt, endedAt
+}
+
+// readKiroCurrentTranscript parses one current-layout Kiro JSONL file. A
+// missing file parses to a transcript with no messages.
+func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return kiroCurrentTranscript{}, false, nil
+			return kiroCurrentTranscript{}, nil
 		}
-		return kiroCurrentTranscript{}, false, fmt.Errorf("stat %s: %w", path, err)
+		return kiroCurrentTranscript{}, fmt.Errorf("stat %s: %w", path, err)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return kiroCurrentTranscript{}, false, fmt.Errorf("open %s: %w", path, err)
+		return kiroCurrentTranscript{}, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 	lr := newLineReader(f, maxLineSize)
@@ -418,7 +431,7 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, bool, error)
 			spawn := kiroSubagentSpawn{SubSessionID: subID, Name: payload.Get("subAgentName").Str, Prompt: payload.Get("prompt").Str}
 			input, err := json.Marshal(kiroSubagentInput{SubagentType: spawn.Name, Description: payload.Get("explanation").Str, Prompt: spawn.Prompt})
 			if err != nil {
-				return kiroCurrentTranscript{}, false, fmt.Errorf("encode Kiro subagent input in %s: %w", path, err)
+				return kiroCurrentTranscript{}, fmt.Errorf("encode Kiro subagent input in %s: %w", path, err)
 			}
 			call := ParsedToolCall{ToolUseID: subID, ToolName: kiroSubagentToolName, Category: NormalizeToolCategory(kiroSubagentToolName), InputJSON: string(input), SubagentSessionID: "kiro:" + subID}
 			display := kiroFormatToolCalls([]ParsedToolCall{call})
@@ -431,8 +444,11 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, bool, error)
 			if !IsValidSessionID(subID) {
 				continue
 			}
-			raw := payload.Get("response").Raw
-			if payload.Get("response").Str == "" {
+			// A failed spawn reports an errorMessage and may leave response
+			// empty; any non-empty response is kept as the result.
+			response := payload.Get("response")
+			raw := response.Raw
+			if !response.Exists() || response.Type == gjson.Null || (response.Type == gjson.String && response.Str == "") {
 				if errRaw := payload.Get("errorMessage").Raw; errRaw != "" {
 					raw = errRaw
 				}
@@ -451,7 +467,7 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, bool, error)
 		}
 	}
 	if err := lr.Err(); err != nil {
-		return kiroCurrentTranscript{}, false, fmt.Errorf("reading kiro %s: %w", path, err)
+		return kiroCurrentTranscript{}, fmt.Errorf("reading kiro %s: %w", path, err)
 	}
 	return kiroCurrentTranscript{
 		Messages:        messages,
@@ -461,7 +477,7 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, bool, error)
 		Spawns:          spawns,
 		ModTime:         info.ModTime(),
 		Size:            info.Size(),
-	}, true, nil
+	}, nil
 }
 
 // parseCurrentSession parses a session's messages.jsonl and returns the
@@ -469,11 +485,11 @@ func readKiroCurrentTranscript(path string) (kiroCurrentTranscript, bool, error)
 func (p *kiroProvider) parseCurrentSession(
 	ctx context.Context, path, sessionID, machine string,
 ) (*ParsedSession, kiroCurrentTranscript, error) {
-	transcript, found, err := readKiroCurrentTranscript(path)
+	transcript, err := readKiroCurrentTranscript(path)
 	if err != nil {
 		return nil, kiroCurrentTranscript{}, err
 	}
-	if !found || len(transcript.Messages) == 0 {
+	if len(transcript.Messages) == 0 {
 		return nil, kiroCurrentTranscript{}, nil
 	}
 	messages := transcript.Messages
@@ -496,17 +512,12 @@ func (p *kiroProvider) parseCurrentSession(
 		project = "unknown"
 	}
 	startedAt, endedAt := parseTimestamp(meta.CreatedAt), parseTimestamp(meta.LastModifiedAt)
+	firstAt, lastAt := transcript.bounds()
 	if startedAt.IsZero() {
-		startedAt = transcript.EarliestMessage
-		if startedAt.IsZero() {
-			startedAt = transcript.ModTime
-		}
+		startedAt = firstAt
 	}
 	if endedAt.IsZero() {
-		endedAt = transcript.LatestMessage
-		if endedAt.IsZero() {
-			endedAt = transcript.ModTime
-		}
+		endedAt = lastAt
 	}
 	return &ParsedSession{ID: "kiro:" + sessionID, Project: project, Machine: machine, Agent: AgentKiro, Cwd: cwd, FirstMessage: transcript.FirstMessage, StartedAt: startedAt, EndedAt: endedAt, MessageCount: len(messages), UserMessageCount: transcript.userMessageCount(), SessionName: meta.Title, File: FileInfo{Path: path, Size: transcript.Size, Mtime: transcript.ModTime.UnixNano()}}, transcript, nil
 }
@@ -579,14 +590,14 @@ func parseCurrentSubExecutions(
 		parentID string
 	}
 	origins := make(map[string]spawnOrigin)
-	record := func(spawnerID string, spawns []kiroSubagentSpawn) {
+	recordFirstSpawner := func(spawnerID string, spawns []kiroSubagentSpawn) {
 		for _, spawn := range spawns {
 			if _, seen := origins[spawn.SubSessionID]; !seen {
 				origins[spawn.SubSessionID] = spawnOrigin{spawn: spawn, parentID: spawnerID}
 			}
 		}
 	}
-	record(parent.ID, parentSpawns)
+	recordFirstSpawner(parent.ID, parentSpawns)
 	type childTranscript struct {
 		path       string
 		subID      string
@@ -596,15 +607,15 @@ func parseCurrentSubExecutions(
 	var sourceErrs []SourceError
 	for _, path := range files {
 		subID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-		transcript, found, err := readKiroCurrentTranscript(path)
+		transcript, err := readKiroCurrentTranscript(path)
 		if err != nil {
 			sourceErrs = append(sourceErrs, SourceError{SourceKey: path, DisplayPath: path, SessionID: "kiro:" + subID, Err: err, Retryable: true})
 			continue
 		}
-		if !found || len(transcript.Messages) == 0 {
+		if len(transcript.Messages) == 0 {
 			continue
 		}
-		record("kiro:"+subID, transcript.Spawns)
+		recordFirstSpawner("kiro:"+subID, transcript.Spawns)
 		parsed = append(parsed, childTranscript{path: path, subID: subID, transcript: transcript})
 	}
 	results := make([]ParseResult, 0, len(parsed))
@@ -618,14 +629,7 @@ func parseCurrentSubExecutions(
 		if firstMessage == "" && origin.spawn.Prompt != "" {
 			firstMessage = truncate(strings.ReplaceAll(strings.TrimSpace(origin.spawn.Prompt), "\n", " "), 300)
 		}
-		startedAt := child.transcript.EarliestMessage
-		if startedAt.IsZero() {
-			startedAt = child.transcript.ModTime
-		}
-		endedAt := child.transcript.LatestMessage
-		if endedAt.IsZero() {
-			endedAt = child.transcript.ModTime
-		}
+		startedAt, endedAt := child.transcript.bounds()
 		results = append(results, ParseResult{
 			Session: ParsedSession{
 				ID:               "kiro:" + child.subID,

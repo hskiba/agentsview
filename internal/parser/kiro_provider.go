@@ -805,7 +805,12 @@ func (s kiroSourceSet) StoredSourceHintScopes(
 		case kiroSourceSQLiteSession, kiroSourceLegacyJSONL:
 			return []StoredSourceHintScope{{Path: src.Path}}
 		case kiroSourceCurrentJSONL:
-			return []StoredSourceHintScope{{Path: src.Path}}
+			// The session source also owns its subagent sessions, which are
+			// stored under their own sub-executions transcript paths.
+			return []StoredSourceHintScope{
+				{Path: src.Path},
+				{Path: filepath.Join(filepath.Dir(src.Path), kiroSubExecutionsDirName)},
+			}
 		}
 		return nil
 	}
@@ -922,6 +927,7 @@ func (s kiroSourceSet) FindSource(
 		if err != nil {
 			return SourceRef{}, false, err
 		}
+		probeSubagent := IsValidSessionID(req.RawSessionID) && !isKiroCurrentSessionDir(req.RawSessionID)
 		for _, file := range currentFiles {
 			_, id, ok := kiroCurrentPathUnderRoot(root, file.Path)
 			if !ok {
@@ -934,9 +940,14 @@ func (s kiroSourceSet) FindSource(
 				continue
 			}
 			// A subagent session is parsed by the session that holds its
-			// sub-executions transcript.
-			if source, ok := s.sourceRef(root, file.Path, false); ok &&
-				sourceMatchesKiroSession(source, req.RawSessionID) {
+			// sub-executions transcript. Probe that one file before building
+			// a source so lookups of other IDs stay one stat per session.
+			if !probeSubagent || !kiroRegularFileUnderRoot(root, filepath.Join(
+				filepath.Dir(file.Path), kiroSubExecutionsDirName, req.RawSessionID+".jsonl",
+			)) {
+				continue
+			}
+			if source, ok := s.sourceRef(root, file.Path, false); ok {
 				candidates = append(candidates, source)
 			}
 		}
@@ -1050,15 +1061,20 @@ func (s kiroSourceSet) Fingerprint(
 				}
 			}
 		}
-		subExecutions, err = kiroSubExecutionFiles(src.Root, src.Path)
+		admitted, err := kiroSubExecutionFiles(src.Root, src.Path)
 		if err != nil {
 			return SourceFingerprint{}, err
 		}
-		for _, path := range subExecutions {
+		for _, path := range admitted {
 			subInfo, statErr := os.Stat(path)
 			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					// Removed since the directory was listed.
+					continue
+				}
 				return SourceFingerprint{}, fmt.Errorf("stat %s: %w", path, statErr)
 			}
+			subExecutions = append(subExecutions, path)
 			fingerprint.Size += subInfo.Size()
 			if subInfo.ModTime().UnixNano() > fingerprint.MTimeNS {
 				fingerprint.MTimeNS = subInfo.ModTime().UnixNano()
