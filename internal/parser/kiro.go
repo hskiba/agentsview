@@ -550,7 +550,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("stat Kiro sub-executions %s: %w", dir, err)
+		return nil, fmt.Errorf("stat Kiro sub-executions: %w", err)
 	}
 	if !info.IsDir() {
 		return nil, nil
@@ -560,7 +560,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read Kiro sub-executions %s: %w", dir, err)
+		return nil, fmt.Errorf("list Kiro sub-executions: %w", err)
 	}
 	var files []string
 	for _, entry := range entries {
@@ -571,7 +571,7 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 		path := filepath.Join(dir, entry.Name())
 		regular, err := kiroRegularFileUnderRootChecked(root, path)
 		if err != nil {
-			return nil, fmt.Errorf("probe Kiro sub-execution %s: %w", path, err)
+			return nil, fmt.Errorf("probe Kiro sub-execution: %w", err)
 		}
 		if regular {
 			files = append(files, path)
@@ -581,13 +581,13 @@ func kiroSubExecutionFiles(root, transcript string) ([]string, error) {
 	return files, nil
 }
 
-// parseCurrentSubExecutions parses the subagent transcripts of a session as
+// parseKiroSubExecutions parses the subagent transcripts of a session as
 // child sessions. Each child links to the transcript whose sub_agent_start
 // names it, which is a sibling subagent for nested spawns, and inherits the
 // parent session's project, working directory, and machine. A child file
 // that cannot be read becomes a retryable per-session error. Cancelling ctx
 // stops the parse between subagent files.
-func parseCurrentSubExecutions(
+func parseKiroSubExecutions(
 	ctx context.Context, root string, parent *ParsedSession, parentSpawns []kiroSubagentSpawn,
 ) ([]ParseResult, []SourceError, error) {
 	files, err := kiroSubExecutionFiles(root, parent.File.Path)
@@ -613,6 +613,7 @@ func parseCurrentSubExecutions(
 	type childTranscript struct {
 		path       string
 		subID      string
+		id         string
 		transcript kiroCurrentTranscript
 	}
 	var parsed []childTranscript
@@ -622,22 +623,23 @@ func parseCurrentSubExecutions(
 			return nil, nil, err
 		}
 		subID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		id := "kiro:" + subID
 		transcript, err := readKiroCurrentTranscript(path)
 		if err != nil {
-			sourceErrs = append(sourceErrs, SourceError{SourceKey: path, DisplayPath: path, SessionID: "kiro:" + subID, Err: err, Retryable: true})
+			sourceErrs = append(sourceErrs, SourceError{SourceKey: path, DisplayPath: path, SessionID: id, Err: err, Retryable: true})
 			continue
 		}
 		if len(transcript.Messages) == 0 {
 			continue
 		}
-		recordFirstSpawner("kiro:"+subID, transcript.Spawns)
-		parsed = append(parsed, childTranscript{path: path, subID: subID, transcript: transcript})
+		recordFirstSpawner(id, transcript.Spawns)
+		parsed = append(parsed, childTranscript{path: path, subID: subID, id: id, transcript: transcript})
 	}
 	results := make([]ParseResult, 0, len(parsed))
 	for _, child := range parsed {
 		origin, known := origins[child.subID]
 		parentID := parent.ID
-		if known && origin.parentID != "kiro:"+child.subID {
+		if known && origin.parentID != child.id {
 			parentID = origin.parentID
 		}
 		transcript := child.transcript
@@ -647,7 +649,7 @@ func parseCurrentSubExecutions(
 		startedAt, endedAt := transcript.bounds()
 		results = append(results, ParseResult{
 			Session: ParsedSession{
-				ID:               "kiro:" + child.subID,
+				ID:               child.id,
 				Project:          parent.Project,
 				Machine:          parent.Machine,
 				Agent:            AgentKiro,

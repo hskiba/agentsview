@@ -156,7 +156,7 @@ func (p *kiroProvider) parseCurrentJSONL(
 		// written parent never reconciles its stored subagents away.
 		return ParseOutcome{ResultSetComplete: true, SkipReason: SkipNoSession}, nil
 	}
-	children, sourceErrs, err := parseCurrentSubExecutions(ctx, src.Root, sess, transcript.Spawns)
+	children, sourceErrs, err := parseKiroSubExecutions(ctx, src.Root, sess, transcript.Spawns)
 	if err != nil {
 		return ParseOutcome{}, err
 	}
