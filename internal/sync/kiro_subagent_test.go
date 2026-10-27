@@ -1,6 +1,7 @@
 package sync_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,6 +133,111 @@ func TestKiroSubagentTranscriptSyncsFromChangedPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, kept)
 	assert.Nil(t, kept.SourceMissingAt, "subagents whose transcripts remain stay current")
+}
+
+// writeKiroDecoySession writes an unrelated session with one subagent and
+// returns that subagent's session ID.
+func writeKiroDecoySession(t *testing.T, kiroDir string, i int) string {
+	t.Helper()
+	rawID := fmt.Sprintf("sess_%016x", i)
+	childRawID := fmt.Sprintf("%08x-0000-4000-8000-%012x", i, i)
+	sessDir := filepath.Join(kiroDir, "workspace", rawID)
+	writeKiroLines(t, filepath.Join(sessDir, "messages.jsonl"),
+		`{"id":"u1","timestamp":"2026-06-01T09:00:00Z","payload":{"type":"user","content":"decoy prompt"}}`,
+		kiroSubAgentStart("toolu_decoy", "2026-06-01T09:00:01Z", childRawID, "coder", "decoy subtask"),
+	)
+	writeKiroLines(t, filepath.Join(sessDir, "sub-executions", childRawID+".jsonl"),
+		`{"id":"d1","timestamp":"2026-06-01T09:00:02Z","payload":{"type":"assistant","content":"decoy work"}}`,
+	)
+	return "kiro:" + childRawID
+}
+
+// A subagent event touches only its own session: an archive of unrelated
+// sessions with subagents must not change how much work the event does,
+// for new transcripts or for deleted ones.
+func TestKiroSubagentChangedPathWorkIsCardinalityBounded(t *testing.T) {
+	const laterChildRawID = "66666666-7777-8888-9999-000000000000"
+	type outcome struct {
+		idleSynced     int
+		addTotal       int
+		addSynced      int
+		deleteTotal    int
+		deleteSynced   int
+		laterCaptured  bool
+		laterMissing   bool
+		decoysAffected bool
+	}
+	var outcomes []outcome
+	for _, tc := range []struct {
+		name   string
+		decoys int
+	}{
+		{name: "small", decoys: 3},
+		{name: "large", decoys: 150},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupSingleAgentTestEnv(t, parser.AgentKiro)
+			sessDir := writeKiroSessionWithSubagent(t, env.kiroDir)
+			decoyChildren := make([]string, tc.decoys)
+			for i := range tc.decoys {
+				decoyChildren[i] = writeKiroDecoySession(t, env.kiroDir, i)
+			}
+			stats := env.engine.SyncAll(t.Context(), nil)
+			require.False(t, stats.Aborted)
+			idle := env.engine.SyncAll(t.Context(), nil)
+			require.False(t, idle.Aborted)
+
+			transcript := filepath.Join(sessDir, "messages.jsonl")
+			f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o644)
+			require.NoError(t, err)
+			_, err = f.WriteString(kiroSubAgentStart("toolu_test02", "2026-06-01T10:01:00Z", laterChildRawID, "reviewer", "review it") + "\n")
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			laterChild := filepath.Join(sessDir, "sub-executions", laterChildRawID+".jsonl")
+			writeKiroLines(t, laterChild,
+				`{"id":"y1","timestamp":"2026-06-01T10:01:01Z","payload":{"type":"assistant","content":"reviewing"}}`,
+			)
+			env.engine.SyncPathsContext(t.Context(), []string{laterChild})
+			addStats := env.engine.LastSyncStats()
+			captured, err := env.db.GetSessionFull(t.Context(), "kiro:"+laterChildRawID)
+			require.NoError(t, err)
+
+			require.NoError(t, os.Remove(laterChild))
+			env.engine.SyncPathsContext(t.Context(), []string{laterChild})
+			deleteStats := env.engine.LastSyncStats()
+			removed, err := env.db.GetSessionFull(t.Context(), "kiro:"+laterChildRawID)
+			require.NoError(t, err)
+			require.NotNil(t, removed, "a removed subagent transcript must stay archived")
+
+			decoysAffected := false
+			for _, id := range decoyChildren {
+				decoy, err := env.db.GetSessionFull(t.Context(), id)
+				require.NoError(t, err)
+				if decoy == nil || decoy.SourceMissingAt != nil {
+					decoysAffected = true
+				}
+			}
+
+			outcomes = append(outcomes, outcome{
+				idleSynced:     idle.Synced,
+				addTotal:       addStats.TotalSessions,
+				addSynced:      addStats.Synced,
+				deleteTotal:    deleteStats.TotalSessions,
+				deleteSynced:   deleteStats.Synced,
+				laterCaptured:  captured != nil,
+				laterMissing:   removed.SourceMissingAt != nil,
+				decoysAffected: decoysAffected,
+			})
+		})
+	}
+	require.Len(t, outcomes, 2)
+	small := outcomes[0]
+	assert.Zero(t, small.idleSynced, "an unchanged full sync should not rewrite sessions or subagents")
+	assert.True(t, small.laterCaptured, "a watcher event for a new subagent transcript should sync it")
+	assert.True(t, small.laterMissing, "a removed subagent transcript should be marked source-missing")
+	assert.False(t, small.decoysAffected, "unrelated sessions and subagents stay archived and current")
+	assert.Equal(t, small, outcomes[1],
+		"subagent changed-path work, deletion, and idle syncs must not scale with archive size")
 }
 
 func TestKiroSubagentTranscriptsSyncAsChildSessions(t *testing.T) {
