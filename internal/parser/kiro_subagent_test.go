@@ -392,8 +392,9 @@ func TestKiroProviderSubagentPathsAcrossSeams(t *testing.T) {
 	}
 }
 
-// A subagent source covers its own transcript and the session.json it takes
-// its project from. A session source is unaffected by its subagents.
+// A subagent source covers its own transcript and the working directory it
+// takes from session.json, and nothing else in session.json. A session
+// source is unaffected by its subagents.
 func TestKiroProviderSubagentFingerprint(t *testing.T) {
 	root := t.TempDir()
 	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
@@ -416,9 +417,7 @@ func TestKiroProviderSubagentFingerprint(t *testing.T) {
 	assert.Equal(t, "998c34daf40686d851baf8ce51dc4b2df6fbc0c0660d3369e2ab4895fdc1ca98", session.Hash,
 		"a session's hash does not depend on its subagent transcripts")
 	base := fingerprint(kiroTestChildA)
-	sidecarInfo, err := os.Stat(sidecar)
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(childText))+sidecarInfo.Size(), base.Size)
+	assert.Equal(t, int64(len(childText)), base.Size)
 
 	// Same size and an older mtime: only the content hash can notice.
 	require.NoError(t, os.WriteFile(childPath, []byte(strings.Replace(childText, "v1", "v2", 1)), 0o644))
@@ -428,9 +427,66 @@ func TestKiroProviderSubagentFingerprint(t *testing.T) {
 	assert.NotEqual(t, base.Hash, rewritten.Hash, "a rewritten subagent transcript changes the hash")
 	assert.Equal(t, base.Size, rewritten.Size)
 
+	writeSourceFile(t, sidecar,
+		`{"title":"Renamed","lastModifiedAt":"2026-06-02T00:00:00Z","workspacePaths":["/home/user/code/kiro-app"]}`)
+	assert.Equal(t, rewritten, fingerprint(kiroTestChildA),
+		"a session title or timestamp change does not refresh its subagents")
+	assert.NotEqual(t, session.Hash, fingerprint(kiroTestParentRawID).Hash)
+
 	writeSourceFile(t, sidecar, `{"workspacePaths":["/home/user/code/other-app"]}`)
 	assert.NotEqual(t, rewritten.Hash, fingerprint(kiroTestChildA).Hash,
-		"a subagent takes its project from session.json, so a sidecar change refreshes it")
+		"a subagent takes its working directory from session.json, so changing it refreshes the subagent")
+}
+
+// A subagent copied under the same session in several configured roots is
+// arbitrated like a session: an event on any copy refreshes the preferred
+// one, which here is in the first root.
+func TestKiroProviderSubagentChangedPathPrefersConfiguredRootOrder(t *testing.T) {
+	preferred, other := t.TempDir(), t.TempDir()
+	var copies []string
+	for _, root := range []string{preferred, other} {
+		transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+		copies = append(copies, writeKiroTestSubExecution(t, transcript, kiroTestChildA,
+			testjsonl.KiroAssistantJSON("", "child")))
+	}
+	provider, ok := NewProvider(AgentKiro, ProviderConfig{Roots: []string{preferred, other}})
+	require.True(t, ok)
+
+	for _, changed := range copies {
+		sources, err := provider.SourcesForChangedPath(t.Context(),
+			ChangedPathRequest{Path: changed, EventKind: "write"})
+		require.NoError(t, err, "event on %s", changed)
+		require.Len(t, sources, 1, "event on %s", changed)
+		assert.Equal(t, copies[0], sources[0].DisplayPath, "event on %s", changed)
+	}
+}
+
+// A subagent takes its working directory from its session's session.json,
+// so an event on that file refreshes the session and its subagents.
+func TestKiroProviderSessionMetadataEventRefreshesSubagents(t *testing.T) {
+	root := t.TempDir()
+	transcript := writeKiroTestSession(t, root, testjsonl.KiroUserJSON("", "parent prompt"))
+	child := writeKiroTestSubExecution(t, transcript, kiroTestChildA, testjsonl.KiroAssistantJSON("", "child"))
+	provider := newKiroTestProvider(t, root)
+
+	tests := []struct {
+		path string
+		want []string
+	}{
+		{path: filepath.Join(filepath.Dir(transcript), "session.json"), want: []string{transcript, child}},
+		{path: transcript, want: []string{transcript}},
+		{path: child, want: []string{child}},
+	}
+	for _, tt := range tests {
+		sources, err := provider.SourcesForChangedPath(t.Context(),
+			ChangedPathRequest{Path: tt.path, EventKind: "write", WatchRoot: root})
+		require.NoError(t, err, "event on %s", tt.path)
+		var got []string
+		for _, source := range sources {
+			got = append(got, source.DisplayPath)
+		}
+		assert.Equal(t, tt.want, got, "sources for an event on %s", tt.path)
+	}
 }
 
 func TestKiroProviderFindSourceResolvesSubagentID(t *testing.T) {

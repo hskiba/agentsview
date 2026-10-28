@@ -296,6 +296,31 @@ type kiroCurrentMeta struct {
 	WorkspacePaths []string `json:"workspacePaths"`
 }
 
+func (m kiroCurrentMeta) cwd() string {
+	if len(m.WorkspacePaths) > 0 {
+		return m.WorkspacePaths[0]
+	}
+	return ""
+}
+
+// readKiroCurrentMeta reads the session.json beside a session transcript. A
+// session without one has empty metadata.
+func readKiroCurrentMeta(roots []string, transcript string) (kiroCurrentMeta, error) {
+	meta := kiroCurrentMeta{}
+	sidecar, ok := kiroCurrentSidecarPath(roots, transcript)
+	if !ok {
+		return meta, nil
+	}
+	data, err := os.ReadFile(sidecar)
+	if err != nil {
+		return meta, fmt.Errorf("read Kiro current metadata %s: %w", sidecar, err)
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return meta, fmt.Errorf("decode Kiro current metadata %s: %w", sidecar, err)
+	}
+	return meta, nil
+}
+
 // kiroSubagentToolName is the Task tool name recorded for a kiro-cli
 // subagent spawn. kiro-cli writes the spawn as sub_agent_start and
 // sub_agent_complete records instead of a tool_call/tool_result pair.
@@ -456,20 +481,11 @@ func (p *kiroProvider) parseCurrentSessionContext(
 	if len(messages) == 0 {
 		return nil, nil, nil
 	}
-	meta := kiroCurrentMeta{}
-	if sidecar, ok := kiroCurrentSidecarPath(p.sources.roots, sessionTranscript); ok {
-		data, readErr := os.ReadFile(sidecar)
-		if readErr != nil {
-			return nil, nil, fmt.Errorf("read Kiro current metadata %s: %w", sidecar, readErr)
-		}
-		if unmarshalErr := json.Unmarshal(data, &meta); unmarshalErr != nil {
-			return nil, nil, fmt.Errorf("decode Kiro current metadata %s: %w", sidecar, unmarshalErr)
-		}
+	meta, err := readKiroCurrentMeta(p.sources.roots, sessionTranscript)
+	if err != nil {
+		return nil, nil, err
 	}
-	cwd := ""
-	if len(meta.WorkspacePaths) > 0 {
-		cwd = meta.WorkspacePaths[0]
-	}
+	cwd := meta.cwd()
 	project := ExtractProjectFromCwdWithBranchContext(ctx, cwd, "")
 	if project == "" {
 		project = "unknown"
