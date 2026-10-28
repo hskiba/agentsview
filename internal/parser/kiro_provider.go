@@ -1093,6 +1093,9 @@ func (s kiroSourceSet) Fingerprint(
 				fingerprint.MTimeNS = sideInfo.ModTime().UnixNano()
 			}
 		}
+	case kiroSourceSubagentJSONL:
+		// A subagent reads only the working directory from its session's
+		// sidecar, which its hash covers.
 	case kiroSourceSQLiteDB, kiroSourceSQLiteSession:
 		// SQLite sources have no JSONL sidecar.
 	}
